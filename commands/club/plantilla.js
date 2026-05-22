@@ -161,8 +161,6 @@ export default {
       return message.reply('❌ **No tenés un club registrado!** Usá `ar!registro <nombre>` para crear uno.');
     }
 
-    await message.channel.sendTyping();
-
     // Asegurar que el equipo tenga 5 slots
     while (equipo.equipo.length < 5) {
       equipo.equipo.push({
@@ -223,114 +221,155 @@ export default {
           });
         }
 
-        const opciones = jugadoresReserva.slice(0, 25).map(([key, j]) => ({
-          label: `${j.nombre} (${j.media})`,
-          description: `${j.tipo} | Valor: $GDS ${formatNumber(j.valor)}`,
-          value: key
-        }));
+        let page = 0;
+        const totalPages = Math.ceil(jugadoresReserva.length / 25);
 
-        const selectMenu = new StringSelectMenuBuilder()
-          .setCustomId(`select_pos_${posicion}`)
-          .setPlaceholder(`Elegí un jugador para la posición ${posicion + 1}`)
-          .addOptions(opciones);
+        const generarComponentes = (paginaActual) => {
+          const start = paginaActual * 25;
+          const sliceJugadores = jugadoresReserva.slice(start, start + 25);
 
-        const selectRow = new ActionRowBuilder().addComponents(selectMenu);
+          const opciones = sliceJugadores.map(([key, j]) => ({
+            label: `${j.nombre} (${j.media})`,
+            description: `${j.tipo} | Valor: $GDS ${formatNumber(j.valor)}`,
+            value: key
+          }));
+
+          const selectMenu = new StringSelectMenuBuilder()
+            .setCustomId(`select_pos_${posicion}`)
+            .setPlaceholder(`Elegí un jugador (Pág. ${paginaActual + 1}/${totalPages})`)
+            .addOptions(opciones);
+
+          const rows = [new ActionRowBuilder().addComponents(selectMenu)];
+
+          if (totalPages > 1) {
+            const buttonRow = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`prev_pos_${posicion}`)
+                .setLabel('⬅️ Anterior')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(paginaActual === 0),
+              new ButtonBuilder()
+                .setCustomId(`next_pos_${posicion}`)
+                .setLabel('Siguiente ➡️')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(paginaActual === totalPages - 1)
+            );
+            rows.push(buttonRow);
+          }
+
+          return rows;
+        };
 
         await interaction.reply({
           content: `👥 **Seleccioná un jugador para la posición ${posicion + 1}:**`,
-          components: [selectRow],
+          components: generarComponentes(page),
           flags: 64
         });
 
-        // Collector para el select menu
+        // Collector para el select menu y botones de paginación
         const selectCollector = interaction.channel.createMessageComponentCollector({
-          filter: (i) => i.user.id === message.author.id && i.customId === `select_pos_${posicion}`,
-          time: 30000,
-          max: 1
+          filter: (i) => i.user.id === message.author.id && 
+            (i.customId === `select_pos_${posicion}` || i.customId === `prev_pos_${posicion}` || i.customId === `next_pos_${posicion}`),
+          time: 60000
         });
 
-        selectCollector.on('collect', async (selectInteraction) => {
-          await selectInteraction.deferUpdate();
+        selectCollector.on('collect', async (i) => {
+          if (i.customId === `prev_pos_${posicion}`) {
+            page--;
+            await i.update({
+              components: generarComponentes(page)
+            });
+          } else if (i.customId === `next_pos_${posicion}`) {
+            page++;
+            await i.update({
+              components: generarComponentes(page)
+            });
+          } else if (i.customId === `select_pos_${posicion}`) {
+            selectCollector.stop('selected');
+            
+            const selectInteraction = i;
+            await selectInteraction.deferUpdate();
 
-          const jugadorKey = selectInteraction.values[0];
-          const jugadorSeleccionado = equipo.jugadores[jugadorKey];
+            const jugadorKey = selectInteraction.values[0];
+            const jugadorSeleccionado = equipo.jugadores[jugadorKey];
 
-          if (!jugadorSeleccionado) {
-            return selectInteraction.editReply({
-              content: '❌ **Jugador no encontrado!**',
+            if (!jugadorSeleccionado) {
+              return selectInteraction.editReply({
+                content: '❌ **Jugador no encontrado!**',
+                components: []
+              });
+            }
+
+            // Verificar si ya existe un jugador con el mismo nombre en OTRA posición de la plantilla
+            if (equipo.equipo.some((slot, index) => index !== posicion && slot.nombre === jugadorSeleccionado.nombre)) {
+              return selectInteraction.editReply({
+                content: `❌ **No podés tener a ${jugadorSeleccionado.nombre} más de una vez en tu plantilla**`,
+                components: []
+              });
+            }
+
+            // Si la posición actual tiene un jugador (no placeholder), devolverlo a la reserva
+            const jugadorActual = equipo.equipo[posicion];
+            if (jugadorActual && jugadorActual.nombre) {
+              const keyActual = `${jugadorActual.nombre}_${jugadorActual.tipo}`.replace(/[.\s]/g, '_');
+              equipo.jugadores[keyActual] = { ...jugadorActual };
+            }
+
+            // Poner el nuevo jugador en la posición
+            equipo.equipo[posicion] = {
+              nombre: jugadorSeleccionado.nombre,
+              tipo: jugadorSeleccionado.tipo,
+              dir: jugadorSeleccionado.dir,
+              media: jugadorSeleccionado.media,
+              valor: jugadorSeleccionado.valor
+            };
+
+            // Eliminar de la reserva
+            delete equipo.jugadores[jugadorKey];
+
+            equipo.markModified('jugadores');
+            equipo.markModified('equipo');
+            await equipo.save();
+
+            // Regenerar imagen
+            const newImageBuffer = await generarImagenPlantilla(equipo);
+            const newAttachment = new AttachmentBuilder(newImageBuffer, { name: 'plantilla.png' });
+
+            const newEmbed = new EmbedBuilder()
+              .setColor(client.color)
+              .setTitle(`⚽ Plantilla de ${equipo.nombreEq}`)
+              .setDescription(`✅ **${jugadorSeleccionado.nombre}** fue colocado en la posición ${posicion + 1}!`)
+              .setFooter({ text: `Club de ${message.author.username}` })
+              .setTimestamp();
+
+            // Regenerar fila de botones de posiciones
+            const newRow = new ActionRowBuilder();
+            for (let i = 0; i < 5; i++) {
+              const slot = equipo.equipo[i];
+              const label = (slot && slot.nombre) ? slot.nombre : `Pos ${i + 1}`;
+              newRow.addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`pos_${i + 1}`)
+                  .setLabel(label)
+                  .setStyle(ButtonStyle.Primary)
+              );
+            }
+
+            await selectInteraction.editReply({
+              content: `✅ **${jugadorSeleccionado.nombre}** colocado en posición ${posicion + 1}!`,
               components: []
             });
-          }
 
-          // Verificar si ya existe un jugador con el mismo nombre en OTRA posición de la plantilla
-          if (equipo.equipo.some((slot, index) => index !== posicion && slot.nombre === jugadorSeleccionado.nombre)) {
-            return selectInteraction.editReply({
-              content: `❌ **No podés tener a ${jugadorSeleccionado.nombre} más de una vez en tu plantilla**`,
-              components: []
+            await msg.edit({
+              embeds: [newEmbed],
+              files: [newAttachment],
+              components: [newRow]
             });
           }
-
-          // Si la posición actual tiene un jugador (no placeholder), devolverlo a la reserva
-          const jugadorActual = equipo.equipo[posicion];
-          if (jugadorActual && jugadorActual.nombre) {
-            const keyActual = `${jugadorActual.nombre}_${jugadorActual.tipo}`.replace(/[.\s]/g, '_');
-            equipo.jugadores[keyActual] = { ...jugadorActual };
-          }
-
-          // Poner el nuevo jugador en la posición
-          equipo.equipo[posicion] = {
-            nombre: jugadorSeleccionado.nombre,
-            tipo: jugadorSeleccionado.tipo,
-            dir: jugadorSeleccionado.dir,
-            media: jugadorSeleccionado.media,
-            valor: jugadorSeleccionado.valor
-          };
-
-          // Eliminar de la reserva
-          delete equipo.jugadores[jugadorKey];
-
-          equipo.markModified('jugadores');
-          equipo.markModified('equipo');
-          await equipo.save();
-
-          // Regenerar imagen
-          const newImageBuffer = await generarImagenPlantilla(equipo);
-          const newAttachment = new AttachmentBuilder(newImageBuffer, { name: 'plantilla.png' });
-
-          const newEmbed = new EmbedBuilder()
-            .setColor(client.color)
-            .setTitle(`⚽ Plantilla de ${equipo.nombreEq}`)
-            .setDescription(`✅ **${jugadorSeleccionado.nombre}** fue colocado en la posición ${posicion + 1}!`)
-            .setFooter({ text: `Club de ${message.author.username}` })
-            .setTimestamp();
-
-          // Regenerar fila de botones de posiciones
-          const newRow = new ActionRowBuilder();
-          for (let i = 0; i < 5; i++) {
-            const slot = equipo.equipo[i];
-            const label = (slot && slot.nombre) ? slot.nombre : `Pos ${i + 1}`;
-            newRow.addComponents(
-              new ButtonBuilder()
-                .setCustomId(`pos_${i + 1}`)
-                .setLabel(label)
-                .setStyle(ButtonStyle.Primary)
-            );
-          }
-
-          await selectInteraction.editReply({
-            content: `✅ **${jugadorSeleccionado.nombre}** colocado en posición ${posicion + 1}!`,
-            components: []
-          });
-
-          await msg.edit({
-            embeds: [newEmbed],
-            files: [newAttachment],
-            components: [newRow]
-          });
         });
 
-        selectCollector.on('end', async (collected) => {
-          if (collected.size === 0) {
+        selectCollector.on('end', async (collected, reason) => {
+          if (reason !== 'selected') {
             try {
               await interaction.editReply({
                 content: '⏰ **Tiempo agotado!** No seleccionaste ningún jugador.',
