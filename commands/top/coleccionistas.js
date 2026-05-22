@@ -3,6 +3,7 @@ import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'disc
 
 export default {
   name: 'top-coleccionistas',
+  aliases: ['coleccionistas'],
   run: async (client, message, args, prefix) => {
     // 1. Obtener todos los equipos de la DB
     const equipos = await Equipo.find({});

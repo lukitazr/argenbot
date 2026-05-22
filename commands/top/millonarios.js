@@ -4,6 +4,7 @@ import formatNumber from '../../utils/formatNumber.js';
 
 export default {
   name: 'top-millonarios',
+  aliases: ['millonarios'],
   run: async (client, message, args, prefix) => {
     // 1. Obtener todos los equipos de la DB ordenados por dinero
     const equipos = await Equipo.find({}).sort({ dinero: -1 });
