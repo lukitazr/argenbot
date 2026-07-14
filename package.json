@@ -11,7 +11,6 @@
     "test": "bun run index.js"
   },
   "dependencies": {
-    "@prisma/adapter-better-sqlite3": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "colors": "^1.4.0",
     "discord.js": "^14.26.4",
