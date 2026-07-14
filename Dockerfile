@@ -2,6 +2,8 @@
 
 FROM oven/bun:1.3.14-debian
 
+WORKDIR /app
+
 # Needed at build time for `prisma generate`
 ENV DATABASE_URL=file:/app/db.db
 
