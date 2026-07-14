@@ -1,0 +1,136 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Jugador {
+  id         Int             @id @default(autoincrement())
+  nombre     String
+  media      Int
+  pais       String          @default("Argentina")
+  tipo       String
+  valor      Float
+  dir        String
+  equipos    EquipoJugador[]
+  mercados   Mercado[]
+  nbcPremios nbc[]           @relation("SbcPremio")
+}
+
+model Pack {
+  id          Int          @id @default(autoincrement())
+  nombre      String       @unique
+  tipo        String       @default("normal")
+  desc        String       @default("Sin descripción")
+  dir         String
+  valor       Float
+  contenido   String       @default("{}")
+  equipos     EquipoPack[]
+  nbcDesafios nbcDesafio[]
+}
+
+model Equipo {
+  id                      Int                    @id @default(autoincrement())
+  nombreEq                String                 @unique
+  userID                  String                 @unique
+  dinero                  Float                  @default(0)
+  ultimoDaily             DateTime?
+  ultimoWork              DateTime?
+  ultimoSlut              DateTime?
+  ultimoCrime             DateTime?
+  jugadores               EquipoJugador[]
+  packs_dis               EquipoPack[]
+  nbcSlots                nbcSlot[]
+  nbcCompletados          nbcCompletado[]
+  nbcDesafiosCompletados  nbcDesafioCompletado[]
+}
+
+model EquipoJugador {
+  id           Int       @id @default(autoincrement())
+  equipoId     Int
+  equipo       Equipo    @relation(fields: [equipoId], references: [id], onDelete: Cascade)
+  jugadorId    Int
+  jugador      Jugador   @relation(fields: [jugadorId], references: [id], onDelete: Cascade)
+  posicion     Int       @default(0) // 0 = reserva, 1-5 = posiciones titulares
+  bloqueadoNbc Boolean   @default(false)
+  nbcSlots     nbcSlot[]
+}
+
+model EquipoPack {
+  id       Int    @id @default(autoincrement())
+  equipoId Int
+  equipo   Equipo @relation(fields: [equipoId], references: [id], onDelete: Cascade)
+  packId   Int
+  pack     Pack   @relation(fields: [packId], references: [id], onDelete: Cascade)
+}
+
+model Mercado {
+  id               Int      @id @default(autoincrement())
+  vendedorID       String
+  jugadorId        Int
+  jugador          Jugador  @relation(fields: [jugadorId], references: [id], onDelete: Cascade)
+  precio           Float
+  fechaPublicacion DateTime @default(now())
+}
+
+model nbc {
+  id          Int             @id @default(autoincrement())
+  nombre      String          @unique
+  desc        String          @default("")
+  premioId    Int
+  premio      Jugador         @relation("SbcPremio", fields: [premioId], references: [id])
+  desafios    nbcDesafio[]
+  completados nbcCompletado[]
+}
+
+model nbcDesafio {
+  id                 Int                    @id @default(autoincrement())
+  nbcId              Int
+  nbc                nbc                    @relation(fields: [nbcId], references: [id], onDelete: Cascade)
+  nombre             String
+  desc               String                 @default("")
+  cantidadPlantillas Int                    @default(1)
+  requisitos         String                 @default("{}") // JSON con reglas
+  premioGodeanos     Float                  @default(0)
+  premioPackId       Int?
+  premioPack         Pack?                  @relation(fields: [premioPackId], references: [id])
+  slots              nbcSlot[]
+  completados        nbcDesafioCompletado[]
+}
+
+model nbcSlot {
+  id              Int           @id @default(autoincrement())
+  desafioId       Int
+  desafio         nbcDesafio    @relation(fields: [desafioId], references: [id], onDelete: Cascade)
+  equipoId        Int
+  equipo          Equipo        @relation(fields: [equipoId], references: [id], onDelete: Cascade)
+  equipoJugadorId Int
+  equipoJugador   EquipoJugador @relation(fields: [equipoJugadorId], references: [id], onDelete: Cascade)
+  plantillaIndex  Int           @default(0) // 0, 1, 2... para desafíos multi-plantilla
+  slotIndex       Int           @default(0) // 0-4 posición dentro de la plantilla
+}
+
+model nbcCompletado {
+  id       Int      @id @default(autoincrement())
+  nbcId    Int
+  nbc      nbc      @relation(fields: [nbcId], references: [id], onDelete: Cascade)
+  equipoId Int
+  equipo   Equipo   @relation(fields: [equipoId], references: [id], onDelete: Cascade)
+  fecha    DateTime @default(now())
+
+  @@unique([nbcId, equipoId])
+}
+
+model nbcDesafioCompletado {
+  id        Int        @id @default(autoincrement())
+  desafioId Int
+  desafio   nbcDesafio @relation(fields: [desafioId], references: [id], onDelete: Cascade)
+  equipoId  Int
+  equipo    Equipo     @relation(fields: [equipoId], references: [id], onDelete: Cascade)
+  fecha     DateTime   @default(now())
+
+  @@unique([desafioId, equipoId])
+}

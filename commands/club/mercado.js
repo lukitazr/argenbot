@@ -1,5 +1,4 @@
-import Equipo from '../../models/Equipo.js';
-import Mercado from '../../models/Mercado.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } from 'discord.js';
 import formatNumber from '../../utils/formatNumber.js';
 
@@ -18,7 +17,11 @@ export default {
     }
 
     if (accion === 'ver') {
-      const enVenta = await Mercado.find({}).sort({ precio: 1 });
+      const enVenta = await prisma.mercado.findMany({
+        orderBy: { precio: 'asc' },
+        include: { jugador: true }
+      });
+
       if (enVenta.length === 0) {
         return message.reply('📉 **El mercado está vacío en este momento.**');
       }
@@ -27,7 +30,7 @@ export default {
       let paginaActual = 0;
       const paginasTotal = Math.ceil(enVenta.length / elementosPorPagina);
 
-      const crearEmbed = (pagina) => {
+      const crearEmbed = async (pagina) => {
         const inicio = pagina * elementosPorPagina;
         const fin = inicio + elementosPorPagina;
         const lista = enVenta.slice(inicio, fin);
@@ -40,10 +43,20 @@ export default {
           .setTimestamp();
 
         let desc = '';
-        lista.forEach((item, index) => {
-          desc += `**${inicio + index + 1}. ${item.jugadorData.nombre}** (${item.jugadorData.tipo}) | ${item.jugadorData.media}\n`;
-          desc += `💰 Precio: $GDS ${formatNumber(item.precio)} | 👤 Vendedor: ${item.vendedorUserN}\n\n`;
-        });
+        for (let index = 0; index < lista.length; index++) {
+          const item = lista[index];
+          const j = item.jugador;
+
+          // Resolver el tag de usuario del vendedor de forma asíncrona
+          let vendTag = 'Desconocido';
+          try {
+            const user = client.users.cache.get(item.vendedorID) || await client.users.fetch(item.vendedorID);
+            if (user) vendTag = user.username;
+          } catch (e) { }
+
+          desc += `**${inicio + index + 1}. ${j.nombre}** (${j.tipo}) | ${j.media}\n`;
+          desc += `💰 Precio: $GDS ${formatNumber(item.precio)} | 👤 Vendedor: ${vendTag}\n\n`;
+        }
         embed.setDescription(desc);
 
         return embed;
@@ -65,7 +78,7 @@ export default {
       };
 
       const msg = await message.reply({
-        embeds: [crearEmbed(paginaActual)],
+        embeds: [await crearEmbed(paginaActual)],
         components: paginasTotal > 1 ? [crearBotones(paginaActual)] : []
       });
 
@@ -83,7 +96,7 @@ export default {
           paginaActual = Math.min(paginasTotal - 1, paginaActual + 1);
         }
         await i.update({
-          embeds: [crearEmbed(paginaActual)],
+          embeds: [await crearEmbed(paginaActual)],
           components: [crearBotones(paginaActual)]
         });
       });
@@ -101,44 +114,49 @@ export default {
         return message.reply('❌ **Uso incorrecto!** Debe ser: `ar!mercado publicar <nombre_del_jugador> <precio>`\nEjemplo: `ar!mercado publicar tako 5000`');
       }
 
-      const equipo = await Equipo.findOne({ userID: message.author.id });
+      const equipo = await prisma.equipo.findUnique({
+        where: { userID: message.author.id },
+        include: {
+          jugadores: {
+            where: { posicion: 0, bloqueadoNbc: false },
+            include: { jugador: true }
+          }
+        }
+      });
+
       if (!equipo) return message.reply('❌ **No tenés un club registrado!**');
-      if (!equipo.jugadores || Object.keys(equipo.jugadores).length === 0) {
+      if (!equipo.jugadores || equipo.jugadores.length === 0) {
         return message.reply('❌ **No tenés jugadores en tu reserva para vender!**');
       }
 
       // Buscar TODOS los jugadores que coincidan con el nombre
-      const matches = [];
-      for (const [key, jugador] of Object.entries(equipo.jugadores)) {
-        if (jugador.nombre.toLowerCase() === nombreInput) {
-          matches.push({ key, ...jugador });
-        }
-      }
+      const matches = equipo.jugadores.filter(ej => ej.jugador.nombre.toLowerCase() === nombreInput);
 
       if (matches.length === 0) {
         return message.reply(`❌ **No tenés a "${nombreInput}" en tu reserva!**`);
       }
 
-      const procesarVenta = async (jugadorKey, jugadorData, targetMsg = message) => {
-        // Remover del equipo y poner en mercado
-        const nuevaPublicacion = new Mercado({
-          vendedorID: equipo.userID,
-          vendedorUserN: equipo.userN,
-          jugadorKey: jugadorKey,
-          jugadorData: jugadorData,
-          precio: precio
+      const procesarVenta = async (ejId, jugadorData, targetMsg = message) => {
+        // Verificar si el jugador sigue en la reserva
+        const eqJug = await prisma.equipoJugador.findUnique({
+          where: { id: ejId }
         });
 
-        const equipoUpdate = await Equipo.findOne({ userID: message.author.id });
-        if (!equipoUpdate || !equipoUpdate.jugadores[jugadorKey]) {
+        if (!eqJug || eqJug.posicion !== 0) {
           return targetMsg.reply('❌ **Hubo un error al procesar la venta. El jugador ya no está en tu reserva.**');
         }
 
-        delete equipoUpdate.jugadores[jugadorKey];
-        equipoUpdate.markModified('jugadores');
-
-        await nuevaPublicacion.save();
-        await equipoUpdate.save();
+        // Remover del equipo y crear en mercado en transacción
+        await prisma.$transaction([
+          prisma.equipoJugador.delete({ where: { id: ejId } }),
+          prisma.mercado.create({
+            data: {
+              vendedorID: message.author.id,
+              jugadorId: jugadorData.id,
+              precio: precio
+            }
+          })
+        ]);
 
         const successMsg = `✅ **Has publicado a ${jugadorData.nombre} (${jugadorData.tipo}) por $GDS ${formatNumber(precio)} en el mercado!**`;
         if (targetMsg === message) {
@@ -149,7 +167,7 @@ export default {
       };
 
       if (matches.length === 1) {
-        return procesarVenta(matches[0].key, matches[0]);
+        return procesarVenta(matches[0].id, matches[0].jugador);
       } else {
         // Múltiples versiones encontradas
         const row = new ActionRowBuilder().addComponents(
@@ -157,17 +175,17 @@ export default {
             .setCustomId('vender_select')
             .setPlaceholder('Seleccioná qué versión querés vender')
             .addOptions(matches.map(m => ({
-              label: `${m.nombre} (${m.media})`,
-              description: `${m.tipo} | Valor: $GDS ${formatNumber(m.valor)}`,
-              value: m.key
+              label: `${m.jugador.nombre} (${m.jugador.media})`,
+              description: `${m.jugador.tipo} | Valor: $GDS ${formatNumber(m.jugador.valor)}`,
+              value: m.id.toString()
             })))
         );
 
         const embed = new EmbedBuilder()
           .setColor('#FFD700')
           .setTitle('🤔 Múltiples versiones encontradas')
-          .setDescription(`Tenés ${matches.length} versiones de **${matches[0].nombre}**. Seleccioná cuál querés poner a la venta por **$GDS ${formatNumber(precio)}**:`)
-          .setFooter({ text: 'Tenés 30 segundos para elegir.' });
+          .setDescription(`Tenés ${matches.length} versiones de **${matches[0].jugador.nombre}**. Seleccioná cuál querés poner a la venta por **$GDS ${formatNumber(precio)}**:`)
+          .setFooter({ text: 'Tenés 30 segundos para elegir. APURATE FLACO.' });
 
         const msgMenu = await message.reply({ embeds: [embed], components: [row] });
 
@@ -179,14 +197,14 @@ export default {
 
         collector.on('collect', async (i) => {
           await i.deferUpdate();
-          const seleccionadaKey = i.values[0];
-          const match = matches.find(m => m.key === seleccionadaKey);
-          await procesarVenta(seleccionadaKey, match, i);
+          const seleccionadaId = parseInt(i.values[0]);
+          const match = matches.find(m => m.id === seleccionadaId);
+          await procesarVenta(seleccionadaId, match.jugador, i);
         });
 
         collector.on('end', async (collected) => {
           if (collected.size === 0) {
-            try { await msgMenu.edit({ content: '❌ **Tiempo agotado.** Venta cancelada.', components: [], embeds: [] }); } catch (e) {}
+            try { await msgMenu.edit({ content: '❌ **Tiempo agotado.** Venta cancelada.', components: [], embeds: [] }); } catch (e) { }
           }
         });
       }
@@ -198,14 +216,30 @@ export default {
         return message.reply('❌ **Debes especificar el nombre del jugador que querés comprar!**\nUso: `ar!mercado comprar <nombre_del_jugador>`');
       }
 
-      const comprador = await Equipo.findOne({ userID: message.author.id });
+      const comprador = await prisma.equipo.findUnique({
+        where: { userID: message.author.id },
+        include: {
+          jugadores: {
+            include: { jugador: true }
+          }
+        }
+      });
       if (!comprador) return message.reply('❌ **No tenés un club registrado!**');
 
       // Buscar todos los jugadores con ese nombre en el mercado
-      const todasLasPublicaciones = await Mercado.find({}).sort({ precio: 1 });
-      const matches = todasLasPublicaciones.filter(p => p.jugadorData.nombre.toLowerCase() === nombreInput);
+      const todasLasPublicaciones = await prisma.mercado.findMany({
+        where: {
+          jugador: {
+            nombre: {
+              equals: nombreInput
+            }
+          }
+        },
+        orderBy: { precio: 'asc' },
+        include: { jugador: true }
+      });
 
-      if (matches.length === 0) {
+      if (todasLasPublicaciones.length === 0) {
         return message.reply(`❌ **No hay ningún jugador llamado "${nombreInput}" en venta!**`);
       }
 
@@ -215,42 +249,83 @@ export default {
           return targetMsg === message ? message.reply(errMsg) : targetMsg.editReply({ content: errMsg, components: [], embeds: [] });
         }
 
-        const compradorActualizado = await Equipo.findOne({ userID: message.author.id });
+        const compradorActualizado = await prisma.equipo.findUnique({
+          where: { userID: message.author.id },
+          include: {
+            jugadores: true
+          }
+        });
+
         if (compradorActualizado.dinero < publicacion.precio) {
           const errMsg = `❌ **No tenés suficientes Godeanos!** Cuesta $GDS ${formatNumber(publicacion.precio)} y vos tenés $GDS ${formatNumber(compradorActualizado.dinero)}.`;
           return targetMsg === message ? message.reply(errMsg) : targetMsg.editReply({ content: errMsg, components: [], embeds: [] });
         }
 
-        if (compradorActualizado.jugadores && compradorActualizado.jugadores[publicacion.jugadorKey]) {
-          const errMsg = `❌ **Ya tenés a ${publicacion.jugadorData.nombre} (${publicacion.jugadorData.tipo}) en tu reserva!**`;
+        // Verificar si ya tiene esa carta exacta
+        const tieneCarta = compradorActualizado.jugadores.some(ej => ej.jugadorId === publicacion.jugadorId);
+        if (tieneCarta) {
+          const errMsg = `❌ **Ya tenés a ${publicacion.jugador.nombre} (${publicacion.jugador.tipo}) en tu reserva!**`;
           return targetMsg === message ? message.reply(errMsg) : targetMsg.editReply({ content: errMsg, components: [], embeds: [] });
         }
 
-        const vendedor = await Equipo.findOne({ userID: publicacion.vendedorID });
+        // Transferir en transacción
+        const queries = [
+          // 1. Quitar dinero al comprador
+          prisma.equipo.update({
+            where: { id: compradorActualizado.id },
+            data: { dinero: { decrement: publicacion.precio } }
+          }),
+          // 2. Dar el jugador al comprador (reserva)
+          prisma.equipoJugador.create({
+            data: {
+              equipoId: compradorActualizado.id,
+              jugadorId: publicacion.jugadorId,
+              posicion: 0
+            }
+          }),
+          // 3. Eliminar la publicación del mercado
+          prisma.mercado.delete({
+            where: { id: publicacion.id }
+          })
+        ];
+
+        // 4. Agregar dinero al vendedor si tiene club registrado
+        const vendedor = await prisma.equipo.findUnique({
+          where: { userID: publicacion.vendedorID }
+        });
         if (vendedor) {
-          vendedor.dinero += publicacion.precio;
-          await vendedor.save();
+          queries.push(
+            prisma.equipo.update({
+              where: { id: vendedor.id },
+              data: { dinero: { increment: publicacion.precio } }
+            })
+          );
         }
 
-        // Transferir carta e intercambiar dinero
-        compradorActualizado.dinero -= publicacion.precio;
-        if (!compradorActualizado.jugadores) compradorActualizado.jugadores = {};
-        compradorActualizado.jugadores[publicacion.jugadorKey] = publicacion.jugadorData;
-        compradorActualizado.markModified('jugadores');
+        await prisma.$transaction(queries);
 
-        await Mercado.findByIdAndDelete(publicacion._id);
-        await compradorActualizado.save();
+        // Obtener el nuevo dinero del comprador
+        const compradorFinal = await prisma.equipo.findUnique({
+          where: { id: compradorActualizado.id }
+        });
+
+        // Obtener tag de vendedor para mostrar
+        let vendTag = 'Desconocido';
+        try {
+          const user = client.users.cache.get(publicacion.vendedorID) || await client.users.fetch(publicacion.vendedorID);
+          if (user) vendTag = user.username;
+        } catch (e) { }
 
         const embed = new EmbedBuilder()
           .setColor('#00ff00')
           .setTitle('🤝 ¡Traspaso Completado!')
-          .setDescription(`Has comprado a **${publicacion.jugadorData.nombre}** por $GDS ${formatNumber(publicacion.precio)}.`)
+          .setDescription(`Has comprado a **${publicacion.jugador.nombre}** por $GDS ${formatNumber(publicacion.precio)}.`)
           .addFields(
-            { name: 'Vendedor', value: publicacion.vendedorUserN, inline: true },
-            { name: 'Tipo', value: publicacion.jugadorData.tipo, inline: true },
-            { name: 'Media', value: `${publicacion.jugadorData.media}`, inline: true }
+            { name: 'Vendedor', value: vendTag, inline: true },
+            { name: 'Tipo', value: publicacion.jugador.tipo, inline: true },
+            { name: 'Media', value: `${publicacion.jugador.media}`, inline: true }
           )
-          .setFooter({ text: `Club: ${compradorActualizado.nombreEq} | Nuevo saldo: $GDS ${formatNumber(compradorActualizado.dinero)}` })
+          .setFooter({ text: `Club: ${compradorFinal.nombreEq} | Nuevo saldo: $GDS ${formatNumber(compradorFinal.dinero)}` })
           .setTimestamp();
 
         if (targetMsg === message) {
@@ -260,26 +335,26 @@ export default {
         }
       };
 
-      if (matches.length === 1) {
-        return procesarCompra(matches[0]);
+      if (todasLasPublicaciones.length === 1) {
+        return procesarCompra(todasLasPublicaciones[0]);
       } else {
         // Múltiples opciones encontradas
         const row = new ActionRowBuilder().addComponents(
           new StringSelectMenuBuilder()
             .setCustomId('comprar_select')
             .setPlaceholder('Elegí cuál querés comprar')
-            .addOptions(matches.slice(0, 25).map(m => ({
-              label: `${m.jugadorData.nombre} (${m.jugadorData.media}) - $GDS ${formatNumber(m.precio)}`,
-              description: `Tipo: ${m.jugadorData.tipo} | Vendedor: ${m.vendedorUserN}`,
-              value: m._id.toString()
+            .addOptions(todasLasPublicaciones.slice(0, 25).map(m => ({
+              label: `${m.jugador.nombre} (${m.jugador.media}) - $GDS ${formatNumber(m.precio)}`,
+              description: `Tipo: ${m.jugador.tipo}`,
+              value: m.id.toString()
             })))
         );
 
         const embed = new EmbedBuilder()
           .setColor('#0099ff')
           .setTitle('🛒 Múltiples ofertas encontradas')
-          .setDescription(`Hay ${matches.length} publicaciones de **${matches[0].jugadorData.nombre}**. Seleccioná cuál querés comprar:`)
-          .setFooter({ text: 'Tenés 30 segundos para elegir.' });
+          .setDescription(`Hay ${todasLasPublicaciones.length} publicaciones de **${todasLasPublicaciones[0].jugador.nombre}**. Seleccioná cuál querés comprar:`)
+          .setFooter({ text: 'Tenés 30 segundos para elegir, DALE FLACO APURATE.' });
 
         const msgMenu = await message.reply({ embeds: [embed], components: [row] });
 
@@ -291,8 +366,8 @@ export default {
 
         collector.on('collect', async (i) => {
           await i.deferUpdate();
-          const publicacionId = i.values[0];
-          const seleccionada = matches.find(m => m._id.toString() === publicacionId);
+          const publicacionId = parseInt(i.values[0]);
+          const seleccionada = todasLasPublicaciones.find(m => m.id === publicacionId);
           if (!seleccionada) {
             return i.editReply({ content: '❌ **Error: Publicación no encontrada.** Puede que ya haya sido vendida.', components: [], embeds: [] });
           }
@@ -301,10 +376,12 @@ export default {
 
         collector.on('end', async (collected) => {
           if (collected.size === 0) {
-            try { await msgMenu.edit({ content: '❌ **Tiempo agotado.** Compra cancelada.', components: [], embeds: [] }); } catch (e) {}
+            try { await msgMenu.edit({ content: '❌ **Tiempo agotado.** Compra cancelada.', components: [], embeds: [] }); } catch (e) { }
           }
         });
       }
     }
   }
-};
+}
+
+

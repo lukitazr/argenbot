@@ -1,13 +1,10 @@
-import Jugador from '../models/Jugador.js';
-import Pack from '../models/Pack.js';
+import prisma from '../models/db.js';
 
 export default async function seedPacks() {
   try {
-    // Vaciar la colección de packs actual para meter los nuevos
-    await Pack.deleteMany({});
-    console.log('🗑️ Packs antiguos eliminados. Creando nuevos packs...'.yellow);
-
     const CDN_BASE = 'https://cdn.jsdelivr.net/gh/lukitaz-r/assets@main/argenbot';
+    const existentes = await prisma.pack.findMany();
+    const existentesMap = new Map(existentes.map(p => [p.nombre.toLowerCase(), p]));
 
     const packsData = [
       {
@@ -75,12 +72,34 @@ export default async function seedPacks() {
       }
     ];
 
-    // Para evitar errores del modelo "contenido", le metemos un objeto vacío a todos
-    const packsAInsertar = packsData.map(p => ({ ...p, contenido: {} }));
+    const packsAInsertar = [];
 
-    await Pack.insertMany(packsAInsertar);
-    console.log(`✅ ¡Se han creado ${packsData.length} packs exitosamente!`.green);
+    for (const p of packsData) {
+      const existente = existentesMap.get(p.nombre.toLowerCase());
+      if (existente) {
+        if (existente.tipo !== p.tipo || existente.valor !== p.valor || existente.desc !== p.desc || existente.dir !== p.dir) {
+          await prisma.pack.update({
+            where: { id: existente.id },
+            data: { tipo: p.tipo, valor: p.valor, desc: p.desc, dir: p.dir }
+          });
+        }
+      } else {
+        packsAInsertar.push({
+          nombre: p.nombre,
+          tipo: p.tipo,
+          dir: p.dir,
+          valor: p.valor,
+          desc: p.desc
+        });
+      }
+    }
+
+    if (packsAInsertar.length > 0) {
+      await prisma.pack.createMany({ data: packsAInsertar });
+    }
+    console.log(`✅ ¡Se han sincronizado los packs exitosamente!`.green);
   } catch (error) {
     console.error('❌ Error al hacer seed de packs:'.red, error);
   }
 }
+

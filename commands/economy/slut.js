@@ -1,4 +1,4 @@
-import Equipo from '../../models/Equipo.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder } from 'discord.js';
 import formatNumber from '../../utils/formatNumber.js';
 
@@ -26,7 +26,9 @@ export default {
   aliases: ['prostituirse'],
   desc: 'Vendé tu cuerpo para ganar Godeanos (50% de éxito, ganancia media)',
   run: async (client, message, args) => {
-    const equipo = await Equipo.findOne({ userID: message.author.id });
+    const equipo = await prisma.equipo.findUnique({
+      where: { userID: message.author.id }
+    });
 
     if (!equipo) {
       return message.reply('❌ **No tenés un club registrado!** Usá `ar!registro <nombre>` para crear uno.');
@@ -42,36 +44,44 @@ export default {
       return message.reply(`⏳ **Aún te duele la cadera!** Podés volver a venderte en **${hours}h ${minutes}m**.`);
     }
 
-    equipo.ultimoSlut = now;
-
     // Probabilidad de éxito: 50%
     const exito = Math.random() < 0.50;
 
     if (exito) {
-      // Recompensa entre 10000 y 20000
       const recompensa = Math.floor(Math.random() * (20000 - 10000 + 1)) + 10000;
-      equipo.dinero += recompensa;
-      await equipo.save();
+      const updated = await prisma.equipo.update({
+        where: { userID: message.author.id },
+        data: {
+          dinero: { increment: recompensa },
+          ultimoSlut: new Date(now)
+        }
+      });
 
       const msg = slutMessages[Math.floor(Math.random() * slutMessages.length)](formatNumber(recompensa));
 
       const embedExito = new EmbedBuilder()
         .setColor('#FF69B4') // Rosa
         .setTitle('💋 ¡Noche exitosa!')
-        .setDescription(`${msg}\n\n💵 **Nuevo saldo:** $GDS ${formatNumber(equipo.dinero)}`)
+        .setDescription(`${msg}\n\n💵 **Nuevo saldo:** $GDS ${formatNumber(updated.dinero)}`)
         .setTimestamp();
 
       return message.reply({ embeds: [embedExito] });
     } else {
-      await equipo.save();
+      const updated = await prisma.equipo.update({
+        where: { userID: message.author.id },
+        data: {
+          ultimoSlut: new Date(now)
+        }
+      });
 
       const embedFallo = new EmbedBuilder()
         .setColor('#808080') // Gris
         .setTitle('🚶‍♂️ Noche fría')
-        .setDescription(`Nadie te prestó atención hoy. No ganaste ni perdiste nada.\n\n💵 **Tu saldo se mantiene en:** $GDS ${formatNumber(equipo.dinero)}`)
+        .setDescription(`Nadie te prestó atención hoy. No ganaste ni perdiste nada.\n\n💵 **Tu saldo se mantiene en:** $GDS ${formatNumber(updated.dinero)}`)
         .setTimestamp();
 
       return message.reply({ embeds: [embedFallo] });
     }
   }
 };
+

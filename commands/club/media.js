@@ -1,4 +1,4 @@
-import Equipo from '../../models/Equipo.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder } from 'discord.js';
 import { calcularMedia, plantillaCompleta } from '../../utils/calcularMedia.js';
 
@@ -7,24 +7,41 @@ export default {
   aliases: ['overall', 'ovr'],
   desc: 'Ver la media (overall) de tu plantilla',
   run: async (client, message) => {
-    const equipo = await Equipo.findOne({ userID: message.author.id });
+    const equipo = await prisma.equipo.findUnique({
+      where: { userID: message.author.id },
+      include: {
+        jugadores: {
+          include: {
+            jugador: true
+          }
+        }
+      }
+    });
 
     if (!equipo) {
       return message.reply('❌ **No tenés un club registrado!** Usá `ar!registro <nombre>` para crear uno.');
     }
 
-    const completa = plantillaCompleta(equipo.equipo);
-    const media = calcularMedia(equipo.equipo);
+    // Mapear jugadores a un array de 5 posiciones
+    const equipoArray = Array(5).fill(null);
+    equipo.jugadores.forEach(ej => {
+      if (ej.posicion >= 1 && ej.posicion <= 5) {
+        equipoArray[ej.posicion - 1] = ej.jugador;
+      }
+    });
+
+    const completa = plantillaCompleta(equipoArray);
+    const media = calcularMedia(equipoArray);
 
     const embed = new EmbedBuilder()
       .setColor(client.color)
       .setTitle(`📊 Media de ${equipo.nombreEq}`)
-      .setFooter({ text: `Club de ${message.author.username}` })
+      .setFooter({ text: `Club del pelotudo de ${message.author.username}` })
       .setTimestamp();
 
     // Construir la lista de jugadores con su media
     let desc = '';
-    equipo.equipo.forEach((slot, i) => {
+    equipoArray.forEach((slot, i) => {
       if (slot && slot.nombre && slot.media != null) {
         desc += `**Pos ${i + 1}:** ${slot.nombre} — ⭐ **${slot.media}**\n`;
       } else {
@@ -48,7 +65,7 @@ export default {
     }
 
     if (!completa) {
-      desc += '\n⚠️ *Tu plantilla no está completa. Necesitás 4 jugadores en campo para duelear.*';
+      desc += '\n⚠️ *Tu plantilla no está completa. Necesitás 5 jugadores en campo para duelear.*';
     } else {
       desc += '\n✅ *Plantilla completa. ¡Listo para duelear!*';
     }
@@ -58,3 +75,4 @@ export default {
     return message.reply({ embeds: [embed] });
   }
 };
+

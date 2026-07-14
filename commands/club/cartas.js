@@ -1,4 +1,4 @@
-import Equipo from '../../models/Equipo.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder } from 'discord.js';
 
 export default {
@@ -8,7 +8,17 @@ export default {
   run: async (client, message, args) => {
     // Permitir ver las cartas de otro usuario
     const targetUser = message.mentions.users.first() || message.author;
-    const equipo = await Equipo.findOne({ userID: targetUser.id });
+    
+    const equipo = await prisma.equipo.findUnique({
+      where: { userID: targetUser.id },
+      include: {
+        jugadores: {
+          include: {
+            jugador: true
+          }
+        }
+      }
+    });
 
     if (!equipo) {
       if (targetUser.id === message.author.id) {
@@ -24,37 +34,46 @@ export default {
       .setDescription(`Listado completo de las cartas de ${targetUser.username}.`)
       .setTimestamp();
 
-    // 1. Plantilla (los que están en el equipo, máximo 4 slots posibles)
-    // El array 'equipo' tiene 4 elementos. Los placeholders no tienen 'nombre'.
-    const enPlantilla = equipo.equipo.filter(j => j && j.nombre);
+    // 1. Plantilla (posiciones 1 al 5)
+    const enPlantilla = equipo.jugadores.filter(ej => ej.posicion >= 1 && ej.posicion <= 5);
+    // Ordenamos por posicion para mostrarlos en orden
+    enPlantilla.sort((a, b) => a.posicion - b.posicion);
     
     let textoPlantilla = '';
     if (enPlantilla.length > 0) {
-      // Recorremos el array original para mantener la posición real 1, 2, 3 o 4
-      equipo.equipo.forEach((j, index) => {
-        if (j && j.nombre) {
+      // Creamos un array de 5 elementos vacío para mapear las posiciones 1 a 5
+      const slots = Array(5).fill(null);
+      enPlantilla.forEach(ej => {
+        if (ej.posicion >= 1 && ej.posicion <= 5) {
+          slots[ej.posicion - 1] = ej.jugador;
+        }
+      });
+
+      slots.forEach((j, index) => {
+        if (j) {
           textoPlantilla += `**Pos ${index + 1}:** ${j.nombre} — ⭐ ${j.media} [${j.tipo}]\n`;
+        } else {
+          textoPlantilla += `**Pos ${index + 1}:** *Vacío*\n`;
         }
       });
     } else {
-      textoPlantilla = '*No hay jugadores en la plantilla.*\n';
+      textoPlantilla = '*No hay jugadores en la plantilla. Equipá uno usando ar!plantilla equipar.*\n';
     }
 
     embed.addFields({ name: '⚽ En Plantilla', value: textoPlantilla });
 
     // 2. Reserva / Club
-    const reserva = Object.values(equipo.jugadores || {});
+    const reserva = equipo.jugadores.filter(ej => ej.posicion === 0);
     // Ordenar de mayor a menor media
-    reserva.sort((a, b) => b.media - a.media);
+    reserva.sort((a, b) => b.jugador.media - a.jugador.media);
 
     if (reserva.length > 0) {
-      let lineasReserva = reserva.map(j => `▫️ **${j.nombre}** — ⭐ ${j.media} [${j.tipo}]`);
+      let lineasReserva = reserva.map(ej => `▫️ **${ej.jugador.nombre}** — ⭐ ${ej.jugador.media} [${ej.jugador.tipo}] (ID: ${ej.id})`);
       let textoReserva = '';
       let cortado = false;
       let countMostrados = 0;
       
       for (const linea of lineasReserva) {
-        // Limite de embed field value es 1024 caracteres
         if (textoReserva.length + linea.length + 50 > 1024) {
           cortado = true;
           break;
@@ -75,3 +94,4 @@ export default {
     message.reply({ embeds: [embed] });
   }
 };
+

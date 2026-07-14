@@ -1,5 +1,4 @@
-import Equipo from '../../models/Equipo.js';
-import Pack from '../../models/Pack.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import formatNumber from '../../utils/formatNumber.js';
 
@@ -9,13 +8,15 @@ export default {
   desc: 'Compra nuevos packs para tu club',
   run: async (client, message) => {
     // Buscar equipo (necesitamos saldo)
-    let equipo = await Equipo.findOne({ userID: message.author.id });
+    let equipo = await prisma.equipo.findUnique({
+      where: { userID: message.author.id }
+    });
 
     if (!equipo) {
       return message.reply('❌ **No tenés un club registrado!** Usá `ar!registro <nombre>` para crear uno.');
     }
 
-    const packsDB = await Pack.find({}).lean();
+    const packsDB = await prisma.pack.findMany();
 
     if (!packsDB || packsDB.length === 0) {
       return message.reply('❌ **No hay packs disponibles en la tienda en este momento.**');
@@ -38,7 +39,6 @@ export default {
         .setFooter({ text: `Pack ${index + 1} de ${packsDB.length} | Club de ${message.author.username}` })
         .setTimestamp();
 
-      // Usar URL CDN directamente si disponible
       if (pack.dir && pack.dir.startsWith('http')) {
         embed.setImage(pack.dir);
       }
@@ -101,7 +101,9 @@ export default {
         const packSeleccionado = packsDB[indexPack];
 
         // Refrescar saldo del usuario por si hizo compras múltiples
-        equipo = await Equipo.findOne({ userID: message.author.id });
+        equipo = await prisma.equipo.findUnique({
+          where: { userID: message.author.id }
+        });
 
         if (equipo.dinero < packSeleccionado.valor) {
           return interaction.followUp({
@@ -110,17 +112,24 @@ export default {
           });
         }
 
-        // Aplicar la compra
-        equipo.dinero -= packSeleccionado.valor;
-        const nuevoPackParaInventario = {
-          nombre: packSeleccionado.nombre,
-          tipo: packSeleccionado.tipo,
-          valor: packSeleccionado.valor,
-          desc: packSeleccionado.desc
-        };
+        // Aplicar la compra en transacción
+        await prisma.$transaction([
+          prisma.equipo.update({
+            where: { id: equipo.id },
+            data: { dinero: { decrement: packSeleccionado.valor } }
+          }),
+          prisma.equipoPack.create({
+            data: {
+              equipoId: equipo.id,
+              packId: packSeleccionado.id
+            }
+          })
+        ]);
 
-        equipo.packs_dis.push(nuevoPackParaInventario);
-        await equipo.save();
+        // Recargar el saldo
+        equipo = await prisma.equipo.findUnique({
+          where: { userID: message.author.id }
+        });
 
         const embedCompra = new EmbedBuilder()
           .setColor('#00ff00')
@@ -128,7 +137,6 @@ export default {
           .setDescription(`Compraste el pack **${packSeleccionado.nombre}**.\nTu saldo restante es de **$GDS ${formatNumber(equipo.dinero)}**.`)
           .setFooter({ text: '¿Qué querés hacer con tu nuevo pack?' });
 
-        // Usar URL CDN directamente
         if (packSeleccionado.dir && packSeleccionado.dir.startsWith('http')) {
           embedCompra.setImage(packSeleccionado.dir);
         }
@@ -152,8 +160,9 @@ export default {
 
       } else if (interaction.customId === 'volver_tienda') {
         await interaction.deferUpdate();
-        // Tuvimos que re-consultar el saldo antes
-        equipo = await Equipo.findOne({ userID: message.author.id });
+        equipo = await prisma.equipo.findUnique({
+          where: { userID: message.author.id }
+        });
         await interaction.editReply({
           embeds: [crearEmbed(paginaActual)],
           components: [crearBotones(paginaActual)]
@@ -196,8 +205,9 @@ export default {
 
     collector.on('end', async () => {
       try {
-        await msg.edit({ components: [] }); // Eliminar botones principales cuando caduque
+        await msg.edit({ components: [] });
       } catch (e) { /* expirado */ }
     });
   }
 }
+

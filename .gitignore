@@ -1,11 +1,15 @@
 node_modules/
-.env
+.env*
 .cdn-manifest.json
 .cdn-temp/
 package-lock.json
-bun.lock
 assets/cartas
 assets/catalogo
 assets/fondo
 assets/packs
 .antigravitycli
+/generated/prisma
+.agents
+skills-lock.json
+*.db
+GEMINI.md

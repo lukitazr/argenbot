@@ -219,7 +219,7 @@ export default async (_client) => {
 
     if (!existsSync(TEMP_DIR) || !existsSync(join(TEMP_DIR, '.git'))) {
       if (existsSync(TEMP_DIR)) rmSync(TEMP_DIR, { recursive: true, force: true });
-      
+
       if (repoIsEmpty) {
         // Repo vacío: inicializar localmente y vincular el remote
         console.log('  📦 Repositorio vacío detectado. Inicializando...'.yellow);
@@ -330,7 +330,7 @@ export default async (_client) => {
       console.error('     Opciones para autenticar:'.yellow);
       console.error('       1. gh auth login'.yellow);
       console.error('       2. git config --global credential.helper manager'.yellow);
-      // No lanzar error — continuar con la generación de URLs igualmente
+      console.error(pushErr)
     }
 
     // 8. Limpiar directorio temporal

@@ -1,11 +1,19 @@
-import Equipo from '../../models/Equipo.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 
 export default {
   name: 'top-media',
   run: async (client, message, args, prefix) => {
     // 1. Obtener todos los equipos de la DB
-    const equipos = await Equipo.find({});
+    const equipos = await prisma.equipo.findMany({
+      include: {
+        jugadores: {
+          include: {
+            jugador: true
+          }
+        }
+      }
+    });
 
     if (equipos.length === 0) {
       return message.reply('❌ **No hay equipos registrados en la base de datos!**');
@@ -13,11 +21,11 @@ export default {
 
     // 2. Calcular promedio de media de la plantilla para cada uno
     const equiposConMedia = equipos.map(eq => {
-      const active = (eq.equipo || []).filter(c => c && c.nombre && typeof c.media === 'number');
-      const promedio = active.length > 0 ? (active.reduce((sum, c) => sum + c.media, 0) / active.length) : 0;
+      const active = eq.jugadores.filter(ej => ej.posicion >= 1 && ej.posicion <= 5);
+      const promedio = active.length > 0 ? (active.reduce((sum, ej) => sum + ej.jugador.media, 0) / active.length) : 0;
       return {
         nombreEq: eq.nombreEq,
-        userN: eq.userN,
+        userID: eq.userID,
         promedio: promedio,
         activeCount: active.length
       };
@@ -31,13 +39,14 @@ export default {
     let page = 0;
     const totalPages = Math.ceil(equiposConMedia.length / itemsPerPage);
 
-    const generarEmbedYPáginas = (paginaActual) => {
+    const generarEmbedYPáginas = async (paginaActual) => {
       const start = paginaActual * itemsPerPage;
       const end = start + itemsPerPage;
       const sliceEquipos = equiposConMedia.slice(start, end);
 
       let desc = '';
-      sliceEquipos.forEach((eq, idx) => {
+      for (let idx = 0; idx < sliceEquipos.length; idx++) {
+        const eq = sliceEquipos[idx];
         const rankingPos = start + idx;
         let medal = '';
         if (rankingPos === 0) medal = '🥇 ';
@@ -45,8 +54,14 @@ export default {
         else if (rankingPos === 2) medal = '🥉 ';
         else medal = `\`#${rankingPos + 1}\` `;
 
-        desc += `${medal}**${eq.nombreEq}** (de @${eq.userN}) — ⭐ **${eq.promedio.toFixed(1)}** promedio (${eq.activeCount}/5 jugadores)\n`;
-      });
+        let username = 'Desconocido';
+        try {
+          const user = client.users.cache.get(eq.userID) || await client.users.fetch(eq.userID);
+          if (user) username = user.username;
+        } catch (e) {}
+
+        desc += `${medal}**${eq.nombreEq}** (de @${username}) — ⭐ **${eq.promedio.toFixed(1)}** promedio (${eq.activeCount}/5 jugadores)\n`;
+      }
 
       const embed = new EmbedBuilder()
         .setColor(client.color || '#00ffcc')
@@ -77,7 +92,7 @@ export default {
       return [row];
     };
 
-    const embedInicial = generarEmbedYPáginas(page);
+    const embedInicial = await generarEmbedYPáginas(page);
     const componentesIniciales = generarFilaBotones(page);
 
     const msg = await message.reply({
@@ -102,7 +117,7 @@ export default {
       }
 
       await interaction.editReply({
-        embeds: [generarEmbedYPáginas(page)],
+        embeds: [await generarEmbedYPáginas(page)],
         components: generarFilaBotones(page)
       });
     });

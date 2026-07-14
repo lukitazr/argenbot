@@ -1,7 +1,7 @@
-import Equipo from '../../models/Equipo.js';
-import Jugador from '../../models/Jugador.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder } from 'discord.js';
 import formatNumber from '../../utils/formatNumber.js';
+import obtenerEmojiPais from '../../utils/obtenerEmojiPais.js';
 
 export default {
   name: 'canjear',
@@ -14,7 +14,21 @@ export default {
       return message.reply('❌ **Debes especificar el nombre del pack!**\nUso: `ar!canjear <nombre del pack>`');
     }
 
-    const equipo = await Equipo.findOne({ userID: message.author.id });
+    const equipo = await prisma.equipo.findUnique({
+      where: { userID: message.author.id },
+      include: {
+        packs_dis: {
+          include: {
+            pack: true
+          }
+        },
+        jugadores: {
+          include: {
+            jugador: true
+          }
+        }
+      }
+    });
 
     if (!equipo) {
       return message.reply('❌ **No tenés un club registrado!** Usá `ar!registro <nombre>` para crear uno.');
@@ -22,39 +36,51 @@ export default {
 
     // Buscar el pack en los packs disponibles del usuario
     const packIndex = equipo.packs_dis.findIndex(
-      p => p.nombre.toLowerCase() === nombrePack.toLowerCase()
+      ep => ep.pack.nombre.toLowerCase() === nombrePack.toLowerCase()
     );
 
     if (packIndex === -1) {
       return message.reply(`❌ **No tenés el pack "${nombrePack}" disponible!** Usá \`ar!packs\` para ver tus packs.`);
     }
 
-    const packInfo = equipo.packs_dis[packIndex];
+    const ep = equipo.packs_dis[packIndex];
+    const packInfo = ep.pack;
 
     // Buscar jugadores elegibles según el tipo del pack
     let tipoPack = packInfo.tipo;
-    if (!tipoPack) tipoPack = 'normal'; // Compatible con packs viejos sin la propiedad "tipo"
+    if (!tipoPack) tipoPack = 'normal';
 
     let jugadoresElegibles;
     if (tipoPack === 'todos') {
-      jugadoresElegibles = await Jugador.find({}).lean();
+      jugadoresElegibles = await prisma.jugador.findMany();
     } else if (tipoPack === 'especial') {
-      jugadoresElegibles = await Jugador.find({
-        dir: { $not: new RegExp(`[\\\\/]normales[\\\\/]`, 'i') }
-      }).lean();
+      // Filtrar que la dirección de imagen no contenga "normales"
+      jugadoresElegibles = await prisma.jugador.findMany({
+        where: {
+          NOT: {
+            dir: {
+              contains: '/normales/' || '/nbc/'
+            }
+          }
+        }
+      });
     } else {
       let carpetaMatches = tipoPack;
       switch (tipoPack) {
-        case 'normal': carpetaMatches = 'normales'; break;
-        case 'heroe': carpetaMatches = 'heroes'; break;
-        case 'icono': carpetaMatches = 'iconos'; break;
-        case 'time_warp': carpetaMatches = 'time_warps'; break;
-        case 'scream': carpetaMatches = 'scream'; break;
-        case 'toty': carpetaMatches = 'toty'; break;
+        case 'normal': carpetaMatches = '/normales/'; break;
+        case 'heroe': carpetaMatches = '/heroes/'; break;
+        case 'icono': carpetaMatches = '/iconos/'; break;
+        case 'time_warp': carpetaMatches = '/time_warps/'; break;
+        case 'scream': carpetaMatches = '/scream/'; break;
+        case 'toty': carpetaMatches = '/toty/'; break;
       }
-      jugadoresElegibles = await Jugador.find({
-        dir: { $regex: new RegExp(`[\\\\/]${carpetaMatches}[\\\\/]`, 'i') }
-      }).lean();
+      jugadoresElegibles = await prisma.jugador.findMany({
+        where: {
+          dir: {
+            contains: carpetaMatches
+          }
+        }
+      });
     }
 
     if (!jugadoresElegibles || jugadoresElegibles.length === 0) {
@@ -85,16 +111,16 @@ export default {
         case 'Pack Malvado':
         case 'Pack Olvidado':
         case 'Pack MOTY':
-          peso = 100; // Misma probabilidad para todos
+          peso = 100;
           break;
         case 'Pack Godeano de Argentine':
           if (j.media >= 90) peso = 60;
           else if (j.media >= 88) peso = 30;
           else if (j.media >= 86) peso = 10;
-          else peso = 0; // Descartados
+          else peso = 0;
           break;
         default:
-          peso = 10; // Fallback
+          peso = 10;
       }
       return { ...j, peso };
     });
@@ -118,49 +144,52 @@ export default {
       }
     }
 
-    // Añadir jugador a la reserva del equipo o descartarlo si ya existe
-    const jugadorKey = `${jugadorSeleccionado.nombre}_${jugadorSeleccionado.tipo}`.replace(/[.\s]/g, '_');
-    
+    // Añadir jugador a la reserva o descartar si ya existe la carta exacta
+    const tieneCartaExacta = equipo.jugadores.some(ej => ej.jugadorId === jugadorSeleccionado.id);
+
     let isDuplicado = false;
     let isNuevaVersion = false;
     let compensacion = 0;
 
-    if (equipo.jugadores && equipo.jugadores[jugadorKey]) {
-      // Ya tiene al jugador exacto (Nombre + Tipo), se descarta y recibe 50% del valor
+    const queries = [
+      prisma.equipoPack.delete({
+        where: { id: ep.id }
+      })
+    ];
+
+    if (tieneCartaExacta) {
       isDuplicado = true;
       compensacion = Math.floor(jugadorSeleccionado.valor / 2);
-      equipo.dinero += compensacion;
+      queries.push(
+        prisma.equipo.update({
+          where: { id: equipo.id },
+          data: { dinero: { increment: compensacion } }
+        })
+      );
     } else {
-      // Verificar si ya tiene el jugador pero de distinto tipo
-      if (equipo.jugadores) {
-        const tieneMismoNombre = Object.values(equipo.jugadores).some(j => j.nombre.toLowerCase() === jugadorSeleccionado.nombre.toLowerCase());
-        if (tieneMismoNombre) {
-          isNuevaVersion = true;
-        }
-      }
+      isNuevaVersion = equipo.jugadores.some(ej => ej.jugador.nombre.toLowerCase() === jugadorSeleccionado.nombre.toLowerCase());
 
-      // Jugador nuevo, se añade a la reserva
-      const jugadorData = {
-        nombre: jugadorSeleccionado.nombre,
-        tipo: jugadorSeleccionado.tipo,
-        dir: jugadorSeleccionado.dir,
-        media: jugadorSeleccionado.media,
-        valor: jugadorSeleccionado.valor
-      };
-      equipo.jugadores[jugadorKey] = jugadorData;
-      equipo.markModified('jugadores');
+      queries.push(
+        prisma.equipoJugador.create({
+          data: {
+            equipoId: equipo.id,
+            jugadorId: jugadorSeleccionado.id,
+            posicion: 0
+          }
+        })
+      );
     }
 
-    // Eliminar solo 1 instancia del pack
-    equipo.packs_dis.splice(packIndex, 1);
-    equipo.markModified('packs_dis');
+    await prisma.$transaction(queries);
 
-    await equipo.save();
+    // Obtener dinero fresco
+    const updatedEquipo = await prisma.equipo.findUnique({
+      where: { id: equipo.id }
+    });
 
-    // Determinar rareza basado en media para color del embed
     let embedColor;
-    if (jugadorSeleccionado.media > 75) embedColor = '#FFD700'; // Dorado
-    else embedColor = '#bebebe'; // Plata
+    if (jugadorSeleccionado.media > 75) embedColor = '#FFD700';
+    else embedColor = '#bebebe';
 
     const embed = new EmbedBuilder()
       .setColor(embedColor)
@@ -170,21 +199,21 @@ export default {
         { name: '👤 Jugador', value: jugadorSeleccionado.nombre, inline: true },
         { name: '🏷️ Tipo', value: jugadorSeleccionado.tipo, inline: true },
         { name: '⭐ Media', value: `${jugadorSeleccionado.media}`, inline: true },
-        { name: '💰 Valor', value: `$GDS ${formatNumber(jugadorSeleccionado.valor)}`, inline: true }
+        { name: '💰 Valor', value: `$GDS ${formatNumber(jugadorSeleccionado.valor)}`, inline: true },
+        { name: '🌎 Nacionalidad', value: `${jugadorSeleccionado.pais} ${obtenerEmojiPais(jugadorSeleccionado.pais)}`, inline: true }
       )
       .setTimestamp();
 
     if (isDuplicado) {
       embed.addFields({ name: '⚠️ Duplicado', value: `Ya tenías esta carta **exacta**, ha sido descartada automaticamente.\n**Compensación:** +$GDS ${formatNumber(compensacion)} al club.`, inline: false });
-      embed.setFooter({ text: `Carta descartada | Equipo: ${equipo.nombreEq} | 💰 Saldo: $GDS ${formatNumber(equipo.dinero)}` });
+      embed.setFooter({ text: `Chau carta de mierda | Equipo: ${equipo.nombreEq} | 💰 Saldo: $GDS ${formatNumber(updatedEquipo.dinero)}` });
     } else {
       if (isNuevaVersion) {
         embed.addFields({ name: '✨ ¡Nueva Versión!', value: `Ya tenías a **${jugadorSeleccionado.nombre}** de otro tipo, ¡pero esta versión es nueva! Se añadió a tu reserva.`, inline: false });
       }
-      embed.setFooter({ text: `El jugador fue añadido a tu reserva | Club: ${equipo.nombreEq}` });
+      embed.setFooter({ text: `El jugador fue añadido a tu reserva, usá ar!plantilla para ponerlo a laburar!!! (si es que sirve para algo) | Club: ${equipo.nombreEq}` });
     }
 
-    // Usar URL CDN directa en el embed (sin subir attachment)
     if (jugadorSeleccionado.dir && jugadorSeleccionado.dir.startsWith('http')) {
       embed.setImage(jugadorSeleccionado.dir);
     }

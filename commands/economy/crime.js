@@ -1,4 +1,4 @@
-import Equipo from '../../models/Equipo.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder } from 'discord.js';
 import formatNumber from '../../utils/formatNumber.js';
 
@@ -25,7 +25,9 @@ export default {
   aliases: ['crimen', 'robar'],
   desc: 'Cometé un crimen para ganar Godeanos (25% éxito. Gancia alta, pero podés perder dinero si te atrapan)',
   run: async (client, message, args) => {
-    const equipo = await Equipo.findOne({ userID: message.author.id });
+    const equipo = await prisma.equipo.findUnique({
+      where: { userID: message.author.id }
+    });
 
     if (!equipo) {
       return message.reply('❌ **No tenés un club registrado!** Usá `ar!registro <nombre>` para crear uno.');
@@ -41,42 +43,47 @@ export default {
       return message.reply(`⏳ **La policía te está buscando!** Escondete. Podés volver a cometer un crimen en **${hours}h ${minutes}m**.`);
     }
 
-    equipo.ultimoCrime = now;
-
     // Probabilidad de éxito: 25%
     const exito = Math.random() < 0.25;
 
     if (exito) {
-      // Recompensa alta: entre 10000 y 35000
       const recompensa = Math.floor(Math.random() * (35000 - 10000 + 1)) + 10000;
-      equipo.dinero += recompensa;
-      await equipo.save();
+      const updated = await prisma.equipo.update({
+        where: { userID: message.author.id },
+        data: {
+          dinero: { increment: recompensa },
+          ultimoCrime: now
+        }
+      });
 
       const msg = crimeMessages[Math.floor(Math.random() * crimeMessages.length)](formatNumber(recompensa));
 
       const embedExito = new EmbedBuilder()
         .setColor('#FF00FF') // Violeta
         .setTitle('🕵️‍♂️ ¡Golpe Perfecto!')
-        .setDescription(`${msg}\n\n💵 **Nuevo saldo:** $GDS ${formatNumber(equipo.dinero)}`)
+        .setDescription(`${msg}\n\n💵 **Nuevo saldo:** $GDS ${formatNumber(updated.dinero)}`)
         .setTimestamp();
 
       return message.reply({ embeds: [embedExito] });
     } else {
-      // Castigo si falla: perder entre 2500 y 5000
       const perdida = Math.floor(Math.random() * (5000 - 2500 + 1)) + 2500;
-      
-      // Evitar saldos negativos
-      const perdidaReal = Math.min(equipo.dinero, perdida);
-      equipo.dinero -= perdidaReal;
-      await equipo.save();
+
+      const updated = await prisma.equipo.update({
+        where: { userID: message.author.id },
+        data: {
+          dinero: { decrement: perdida },
+          ultimoCrime: new Date(now)
+        }
+      });
 
       const embedFallo = new EmbedBuilder()
         .setColor('#FF0000') // Rojo
         .setTitle('🚨 ¡Te atraparon!')
-        .setDescription(`La policía te descubrió en medio del acto. Tuviste que pagar una fianza de **$GDS ${formatNumber(perdidaReal)}**.\n\n💵 **Nuevo saldo:** $GDS ${formatNumber(equipo.dinero)}`)
+        .setDescription(`La policía te descubrió en medio del acto. Tuviste que pagar una fianza de **$GDS ${formatNumber(perdida)}**.\n\n💵 **Nuevo saldo:** $GDS ${formatNumber(updated.dinero)}`)
         .setTimestamp();
 
       return message.reply({ embeds: [embedFallo] });
     }
   }
 };
+

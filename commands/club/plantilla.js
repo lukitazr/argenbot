@@ -1,4 +1,4 @@
-import Equipo from '../../models/Equipo.js';
+import prisma from '../../models/db.js';
 import { AttachmentBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, EmbedBuilder } from 'discord.js';
 import sharp from 'sharp';
 import { readFileSync, existsSync } from 'fs';
@@ -68,7 +68,7 @@ const POSICIONES_CARTAS = [
   { x: 490, y: 93 }
 ];
 
-async function generarImagenPlantilla(equipo) {
+async function generarImagenPlantilla(equipoArray) {
   const placeholderUrl = obtenerPlaceholderUrl();
   const fondoUrl = obtenerFondoUrl();
 
@@ -90,7 +90,7 @@ async function generarImagenPlantilla(equipo) {
     });
   }
 
-  const cartasComposites = await Promise.all(equipo.equipo.map(async (slot, i) => {
+  const cartasComposites = await Promise.all(equipoArray.map(async (slot, i) => {
     const pos = POSICIONES_CARTAS[i];
     const imageUrl = (slot?.nombre && slot?.dir) ? (obtenerImagenUrl(slot.dir) || placeholderUrl) : placeholderUrl;
     const sourceBuffer = (await obtenerBufferImagen(imageUrl)) || placeholderBuffer;
@@ -155,31 +155,37 @@ export default {
   aliases: ['equipo', 'squad', 'team'],
   desc: 'Ver tu plantilla y cambiar jugadores en las posiciones',
   run: async (client, message) => {
-    const equipo = await Equipo.findOne({ userID: message.author.id });
+    let equipo = await prisma.equipo.findUnique({
+      where: { userID: message.author.id },
+      include: {
+        jugadores: {
+          include: {
+            jugador: true
+          }
+        }
+      }
+    });
 
     if (!equipo) {
       return message.reply('❌ **No tenés un club registrado!** Usá `ar!registro <nombre>` para crear uno.');
     }
 
-    // Asegurar que el equipo tenga 5 slots
-    while (equipo.equipo.length < 5) {
-      equipo.equipo.push({
-        nombre: undefined,
-        tipo: undefined,
-        dir: 'https://cdn.jsdelivr.net/gh/lukitaz-r/assets@main/argenbot/cartas/placeholder.png',
-        media: undefined,
-        valor: undefined
-      });
-    }
+    // Mapear plantilla actual a array de 5 slots
+    const equipoArray = Array(5).fill(null);
+    equipo.jugadores.forEach(ej => {
+      if (ej.posicion >= 1 && ej.posicion <= 5) {
+        equipoArray[ej.posicion - 1] = ej.jugador;
+      }
+    });
 
     // Generar imagen de la plantilla
-    const imageBuffer = await generarImagenPlantilla(equipo);
+    const imageBuffer = await generarImagenPlantilla(equipoArray);
     const attachment = new AttachmentBuilder(imageBuffer, { name: 'plantilla.png' });
 
     // Crear botones para cada posición
     const row = new ActionRowBuilder();
     for (let i = 0; i < 5; i++) {
-        const slot = equipo.equipo[i];
+        const slot = equipoArray[i];
         const label = (slot && slot.nombre) ? slot.nombre : `Pos ${i + 1}`;
         row.addComponents(
           new ButtonBuilder()
@@ -211,8 +217,20 @@ export default {
       if (interaction.customId.startsWith('pos_')) {
         const posicion = parseInt(interaction.customId.split('_')[1]) - 1;
 
-        // Obtener jugadores disponibles en la reserva
-        const jugadoresReserva = Object.entries(equipo.jugadores || {});
+        // Recargar datos frescos del equipo
+        equipo = await prisma.equipo.findUnique({
+          where: { userID: message.author.id },
+          include: {
+            jugadores: {
+              include: {
+                jugador: true
+              }
+            }
+          }
+        });
+
+        // Obtener jugadores en reserva
+        const jugadoresReserva = equipo.jugadores.filter(ej => ej.posicion === 0 && !ej.bloqueadoNbc);
 
         if (jugadoresReserva.length === 0) {
           return interaction.reply({
@@ -228,10 +246,10 @@ export default {
           const start = paginaActual * 25;
           const sliceJugadores = jugadoresReserva.slice(start, start + 25);
 
-          const opciones = sliceJugadores.map(([key, j]) => ({
-            label: `${j.nombre} (${j.media})`,
-            description: `${j.tipo} | Valor: $GDS ${formatNumber(j.valor)}`,
-            value: key
+          const opciones = sliceJugadores.map(ej => ({
+            label: `${ej.jugador.nombre} (${ej.jugador.media})`,
+            description: `${ej.jugador.tipo} | Valor: $GDS ${formatNumber(ej.jugador.valor)}`,
+            value: ej.id.toString()
           }));
 
           const selectMenu = new StringSelectMenuBuilder()
@@ -290,54 +308,79 @@ export default {
             const selectInteraction = i;
             await selectInteraction.deferUpdate();
 
-            const jugadorKey = selectInteraction.values[0];
-            const jugadorSeleccionado = equipo.jugadores[jugadorKey];
+            const eqJugId = parseInt(selectInteraction.values[0]);
+            const ejSeleccionado = equipo.jugadores.find(ej => ej.id === eqJugId);
 
-            if (!jugadorSeleccionado) {
+            if (!ejSeleccionado) {
               return selectInteraction.editReply({
                 content: '❌ **Jugador no encontrado!**',
                 components: []
               });
             }
 
+            const jugadorSeleccionado = ejSeleccionado.jugador;
+
+            // Recalcular plantilla actual array
+            const currentArray = Array(5).fill(null);
+            equipo.jugadores.forEach(ej => {
+              if (ej.posicion >= 1 && ej.posicion <= 5) {
+                currentArray[ej.posicion - 1] = ej.jugador;
+              }
+            });
+
             // Verificar si ya existe un jugador con el mismo nombre en OTRA posición de la plantilla
-            if (equipo.equipo.some((slot, index) => index !== posicion && slot.nombre === jugadorSeleccionado.nombre)) {
+            if (currentArray.some((slot, index) => index !== posicion && slot && slot.nombre === jugadorSeleccionado.nombre)) {
               return selectInteraction.editReply({
                 content: `❌ **No podés tener a ${jugadorSeleccionado.nombre} más de una vez en tu plantilla**`,
                 components: []
               });
             }
 
-            // Si la posición actual tiene un jugador (no placeholder), devolverlo a la reserva
-            const jugadorActual = equipo.equipo[posicion];
-            if (jugadorActual && jugadorActual.nombre) {
-              const keyActual = `${jugadorActual.nombre}_${jugadorActual.tipo}`.replace(/[.\s]/g, '_');
-              equipo.jugadores[keyActual] = { ...jugadorActual };
+            // Si la posición actual tiene un jugador, devolverlo a la reserva
+            const actualEnPosicion = equipo.jugadores.find(ej => ej.posicion === posicion + 1);
+
+            const queries = [];
+            if (actualEnPosicion) {
+              queries.push(prisma.equipoJugador.update({
+                where: { id: actualEnPosicion.id },
+                data: { posicion: 0 }
+              }));
             }
 
-            // Poner el nuevo jugador en la posición
-            equipo.equipo[posicion] = {
-              nombre: jugadorSeleccionado.nombre,
-              tipo: jugadorSeleccionado.tipo,
-              dir: jugadorSeleccionado.dir,
-              media: jugadorSeleccionado.media,
-              valor: jugadorSeleccionado.valor
-            };
+            // Poner el nuevo en la posición
+            queries.push(prisma.equipoJugador.update({
+              where: { id: eqJugId },
+              data: { posicion: posicion + 1 }
+            }));
 
-            // Eliminar de la reserva
-            delete equipo.jugadores[jugadorKey];
+            await prisma.$transaction(queries);
 
-            equipo.markModified('jugadores');
-            equipo.markModified('equipo');
-            await equipo.save();
+            // Cargar de nuevo todo actualizado
+            const equipoActualizado = await prisma.equipo.findUnique({
+              where: { userID: message.author.id },
+              include: {
+                jugadores: {
+                  include: {
+                    jugador: true
+                  }
+                }
+              }
+            });
+
+            const nuevoArray = Array(5).fill(null);
+            equipoActualizado.jugadores.forEach(ej => {
+              if (ej.posicion >= 1 && ej.posicion <= 5) {
+                nuevoArray[ej.posicion - 1] = ej.jugador;
+              }
+            });
 
             // Regenerar imagen
-            const newImageBuffer = await generarImagenPlantilla(equipo);
+            const newImageBuffer = await generarImagenPlantilla(nuevoArray);
             const newAttachment = new AttachmentBuilder(newImageBuffer, { name: 'plantilla.png' });
 
             const newEmbed = new EmbedBuilder()
               .setColor(client.color)
-              .setTitle(`⚽ Plantilla de ${equipo.nombreEq}`)
+              .setTitle(`⚽ Plantilla de ${equipoActualizado.nombreEq}`)
               .setDescription(`✅ **${jugadorSeleccionado.nombre}** fue colocado en la posición ${posicion + 1}!`)
               .setFooter({ text: `Club de ${message.author.username}` })
               .setTimestamp();
@@ -345,7 +388,7 @@ export default {
             // Regenerar fila de botones de posiciones
             const newRow = new ActionRowBuilder();
             for (let i = 0; i < 5; i++) {
-              const slot = equipo.equipo[i];
+              const slot = nuevoArray[i];
               const label = (slot && slot.nombre) ? slot.nombre : `Pos ${i + 1}`;
               newRow.addComponents(
                 new ButtonBuilder()

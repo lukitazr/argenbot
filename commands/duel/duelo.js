@@ -1,4 +1,4 @@
-import Equipo from '../../models/Equipo.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import {
   calcularMedia,
@@ -185,23 +185,44 @@ export default {
     }
 
     // ─── Buscar equipos ───
-    const equipoEmisor = await Equipo.findOne({ userID: message.author.id });
+    const equipoEmisor = await prisma.equipo.findUnique({
+      where: { userID: message.author.id },
+      include: { jugadores: { include: { jugador: true } } }
+    });
     if (!equipoEmisor) {
       return message.reply('❌ **No tenés un club registrado!** Usá `ar!registro <nombre>` para crear uno.');
     }
 
-    const equipoRival = await Equipo.findOne({ userID: mencionado.id });
+    const equipoRival = await prisma.equipo.findUnique({
+      where: { userID: mencionado.id },
+      include: { jugadores: { include: { jugador: true } } }
+    });
     if (!equipoRival) {
       return message.reply(`❌ **${mencionado.username} no tiene un club registrado!**`);
     }
 
+    // Mapear alineaciones titulares
+    const emisorArray = Array(5).fill(null);
+    equipoEmisor.jugadores.forEach(ej => {
+      if (ej.posicion >= 1 && ej.posicion <= 5) {
+        emisorArray[ej.posicion - 1] = ej.jugador;
+      }
+    });
+
+    const rivalArray = Array(5).fill(null);
+    equipoRival.jugadores.forEach(ej => {
+      if (ej.posicion >= 1 && ej.posicion <= 5) {
+        rivalArray[ej.posicion - 1] = ej.jugador;
+      }
+    });
+
     // ─── Verificar plantillas completas ───
-    if (!plantillaCompleta(equipoEmisor.equipo)) {
-      return message.reply('❌ **Tu plantilla no está completa!** Necesitás 4 jugadores en campo para duelear.');
+    if (!plantillaCompleta(emisorArray)) {
+      return message.reply('❌ **Sos tonto? Tu plantilla no está completa!** Necesitás 5 jugadores en campo para duelear.');
     }
 
-    if (!plantillaCompleta(equipoRival.equipo)) {
-      return message.reply(`❌ **La plantilla de ${equipoRival.nombreEq} no está completa!** Necesitan 4 jugadores en campo.`);
+    if (!plantillaCompleta(rivalArray)) {
+      return message.reply(`❌ **La plantilla de ${equipoRival.nombreEq} no está completa!** Necesitan 5 jugadores en campo.`);
     }
 
     // ─── Verificar dinero ───
@@ -211,12 +232,12 @@ export default {
       if (equipoEmisor.dinero < apuesta) {
         return message.reply(`❌ **No tenés suficientes Godeanos!** Tenés **$GDS ${formatNumber(equipoEmisor.dinero)}** y querés apostar **$GDS ${formatNumber(apuesta)}**.`);
       }
-      return message.reply(`❌ **${equipoRival.nombreEq} no tiene suficientes Godeanos!** Tienen **$GDS ${formatNumber(equipoRival.dinero)}** y la apuesta es **$GDS ${formatNumber(apuesta)}**.`);
+      return message.reply(`❌ **Los de ${equipoRival.nombreEq} son pobres y no tienen los suficientes Godeanos!**  Tienen **$GDS ${formatNumber(equipoRival.dinero)}** y la apuesta es **$GDS ${formatNumber(apuesta)}**.`);
     }
 
     // ─── Calcular medias y probabilidades (con zona de empate) ───
-    const mediaEmisor = calcularMedia(equipoEmisor.equipo);
-    const mediaRival = calcularMedia(equipoRival.equipo);
+    const mediaEmisor = calcularMedia(emisorArray);
+    const mediaRival = calcularMedia(rivalArray);
     const { probA: rawProbA, probB: rawProbB } = calcularProbabilidades(mediaEmisor, mediaRival);
 
     // Reservar PROB_EMPATE sacando proporcional de cada lado
@@ -239,7 +260,7 @@ export default {
         generarBarraProb(probA, probEmpate, probB, equipoEmisor.nombreEq, equipoRival.nombreEq) + '\n\n' +
         `<@${mencionado.id}> ¿Aceptás el duelo?`
       )
-      .setFooter({ text: 'Tenés 60 segundos para responder.' })
+      .setFooter({ text: 'Tenés 60 segundos para responder. DALE CAGÓN EH, TENES MIEDO EH!? PUTO.' })
       .setTimestamp();
 
     const botones = new ActionRowBuilder().addComponents(
@@ -276,8 +297,8 @@ export default {
       }
 
       // ─── ACEPTADO: verificar dinero de nuevo ───
-      const emisorActualizado = await Equipo.findOne({ userID: message.author.id });
-      const rivalActualizado = await Equipo.findOne({ userID: mencionado.id });
+      const emisorActualizado = await prisma.equipo.findUnique({ where: { id: equipoEmisor.id } });
+      const rivalActualizado = await prisma.equipo.findUnique({ where: { id: equipoRival.id } });
 
       if (!emisorActualizado || emisorActualizado.dinero < apuesta) {
         const embedError = new EmbedBuilder()
@@ -298,10 +319,8 @@ export default {
       }
 
       // ─── Descontar dinero de ambos ───
-      emisorActualizado.dinero -= apuesta;
-      rivalActualizado.dinero -= apuesta;
-      await emisorActualizado.save();
-      await rivalActualizado.save();
+      await prisma.equipo.update({ where: { id: equipoEmisor.id }, data: { dinero: { decrement: apuesta } } });
+      await prisma.equipo.update({ where: { id: equipoRival.id }, data: { dinero: { decrement: apuesta } } });
 
       // ─── Aplicar cooldown a ambos ───
       cooldowns.set(message.author.id, Date.now() + COOLDOWN_MS);
@@ -326,26 +345,28 @@ export default {
       // ─── Resolver resultado ───
       if (resultado === 'empate') {
         // ── EMPATE: ambos recuperan su apuesta ──
-        emisorActualizado.dinero += apuesta;
-        rivalActualizado.dinero += apuesta;
+        let emisorDevuelta = apuesta;
+        let rivalDevuelta = apuesta;
 
         // Bonus underdog para el de menor media
         let bonusTexto = '';
         if (mediaEmisor !== mediaRival) {
           const esEmisorUnderdog = mediaEmisor < mediaRival;
-          const underdogEquipo = esEmisorUnderdog ? emisorActualizado : rivalActualizado;
-          const underdogNombre = esEmisorUnderdog ? equipoEmisor.nombreEq : equipoRival.nombreEq;
           const underdogProb = esEmisorUnderdog ? probA : probB;
           const bonus = calcularBonus(underdogProb, apuesta);
 
           if (bonus > 0) {
-            underdogEquipo.dinero += bonus;
-            bonusTexto = `\n🌟 **Bonus underdog por empate:** +$GDS ${formatNumber(bonus)} para **${underdogNombre}** (tenía ${underdogProb}% de chances)`;
+            if (esEmisorUnderdog) emisorDevuelta += bonus;
+            else rivalDevuelta += bonus;
+            bonusTexto = `\n🌟 **Bonus Dolph Ziggler (underdog) por empatar:** +$GDS ${formatNumber(bonus)} para **${esEmisorUnderdog ? equipoEmisor.nombreEq : equipoRival.nombreEq}** (tenía ${underdogProb}% de chances)`;
           }
         }
 
-        await emisorActualizado.save();
-        await rivalActualizado.save();
+        await prisma.equipo.update({ where: { id: equipoEmisor.id }, data: { dinero: { increment: emisorDevuelta } } });
+        await prisma.equipo.update({ where: { id: equipoRival.id }, data: { dinero: { increment: rivalDevuelta } } });
+
+        const emisorFinal = await prisma.equipo.findUnique({ where: { id: equipoEmisor.id } });
+        const rivalFinal = await prisma.equipo.findUnique({ where: { id: equipoRival.id } });
 
         const embedEmpate = new EmbedBuilder()
           .setColor('#FFD700')
@@ -359,20 +380,18 @@ export default {
             `───────────────────\n` +
             `💰 **Apuesta devuelta:** $GDS ${formatNumber(apuesta)} para cada uno` +
             bonusTexto + `\n\n` +
-            `💼 **${equipoEmisor.nombreEq}** → $GDS ${formatNumber(emisorActualizado.dinero)}\n` +
-            `💼 **${equipoRival.nombreEq}** → $GDS ${formatNumber(rivalActualizado.dinero)}`
+            `💼 **${equipoEmisor.nombreEq}** → $GDS ${formatNumber(emisorFinal.dinero)}\n` +
+            `💼 **${equipoRival.nombreEq}** → $GDS ${formatNumber(rivalFinal.dinero)}`
           )
-          .setFooter({ text: `Roll: ${roll.toFixed(2)} | Zona empate: ${probA}% – ${(probA + probEmpate).toFixed(1)}%` })
+          .setFooter({ text: `Roll: ${roll.toFixed(2)} | Zona empate (lol): ${probA}% – ${(probA + probEmpate).toFixed(1)}%` })
           .setTimestamp();
 
         await msg.edit({ embeds: [embedEmpate], components: [] });
       } else {
         // ── VICTORIA ──
         const ganaEmisor = resultado === 'A';
-        const ganadorEquipo = ganaEmisor ? emisorActualizado : rivalActualizado;
-        const perdedorEquipo = ganaEmisor ? rivalActualizado : emisorActualizado;
+        const ganadorId = ganaEmisor ? equipoEmisor.id : equipoRival.id;
         const ganadorNombre = ganaEmisor ? equipoEmisor.nombreEq : equipoRival.nombreEq;
-        const perdedorNombre = ganaEmisor ? equipoRival.nombreEq : equipoEmisor.nombreEq;
         const ganadorProb = ganaEmisor ? probA : probB;
 
         // Premio base (ambas apuestas)
@@ -381,14 +400,16 @@ export default {
         const premioTotal = premio + bonus;
 
         // Acreditar al ganador
-        ganadorEquipo.dinero += premioTotal;
-        await ganadorEquipo.save();
+        await prisma.equipo.update({ where: { id: ganadorId }, data: { dinero: { increment: premioTotal } } });
+
+        const emisorFinal = await prisma.equipo.findUnique({ where: { id: equipoEmisor.id } });
+        const rivalFinal = await prisma.equipo.findUnique({ where: { id: equipoRival.id } });
 
         const esUpset = ganadorProb < 50;
 
         const embedResultado = new EmbedBuilder()
           .setColor(esUpset ? '#FF00FF' : '#00FF00')
-          .setTitle(esUpset ? '🤯 ¡UPSET! ¡Victoria inesperada!' : '🏆 ¡Duelo Finalizado!')
+          .setTitle(esUpset ? '🤯 QUE CARAJOVICH' : '🏆 ¡Duelo Finalizado!')
           .setDescription(
             `**¡${ganadorNombre} gana el duelo!**\n\n` +
             `🔴 **${equipoEmisor.nombreEq}** — Media: ⭐ ${mediaEmisor} — ${probA}%\n` +
@@ -400,13 +421,13 @@ export default {
             `🏆 **Premio base:** $GDS ${formatNumber(premio)}\n` +
             (bonus > 0
               ? `🌟 **Bonus underdog:** +$GDS ${formatNumber(bonus)} (tenía solo ${ganadorProb}% de chances)\n` +
-                `💎 **Premio total:** $GDS ${formatNumber(premioTotal)}\n`
+              `💎 **Premio total:** $GDS ${formatNumber(premioTotal)}\n`
               : '') +
             `\n` +
-            `✅ **${ganadorNombre}** → $GDS ${formatNumber(ganadorEquipo.dinero)}\n` +
-            `❌ **${perdedorNombre}** → $GDS ${formatNumber(perdedorEquipo.dinero)}`
+            `✅ **${equipoEmisor.nombreEq}** → $GDS ${formatNumber(emisorFinal.dinero)}\n` +
+            `❌ **${equipoRival.nombreEq}** → $GDS ${formatNumber(rivalFinal.dinero)}`
           )
-          .setFooter({ text: `Roll: ${roll.toFixed(2)} | Umbral A: ${probA}% | Empate: ${probA}%–${(probA + probEmpate).toFixed(1)}%` })
+          .setFooter({ text: `Roll: ${roll.toFixed(2)} | Probabilidad ${equipoEmisor.nombreEq}: ${probA}% | Empate: ${probA}% – ${(probA + probEmpate).toFixed(1)}% | Probabilidad ${equipoRival.nombreEq}: ${probB}%` })
           .setTimestamp();
 
         await msg.edit({ embeds: [embedResultado], components: [] });

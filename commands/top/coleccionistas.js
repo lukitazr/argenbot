@@ -1,4 +1,4 @@
-import Equipo from '../../models/Equipo.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 
 export default {
@@ -6,7 +6,11 @@ export default {
   aliases: ['coleccionistas'],
   run: async (client, message, args, prefix) => {
     // 1. Obtener todos los equipos de la DB
-    const equipos = await Equipo.find({});
+    const equipos = await prisma.equipo.findMany({
+      include: {
+        jugadores: true
+      }
+    });
 
     if (equipos.length === 0) {
       return message.reply('❌ **No hay equipos registrados en la base de datos!**');
@@ -14,12 +18,12 @@ export default {
 
     // 2. Calcular total de cartas de cada uno (plantilla + reserva)
     const equiposConColeccion = equipos.map(eq => {
-      const squadCardsCount = (eq.equipo || []).filter(c => c && c.nombre).length;
-      const reserveCardsCount = Object.keys(eq.jugadores || {}).length;
+      const squadCardsCount = eq.jugadores.filter(j => j.posicion >= 1 && j.posicion <= 5).length;
+      const reserveCardsCount = eq.jugadores.filter(j => j.posicion === 0).length;
       const totalCards = squadCardsCount + reserveCardsCount;
       return {
         nombreEq: eq.nombreEq,
-        userN: eq.userN,
+        userID: eq.userID,
         totalCards: totalCards,
         squadCardsCount: squadCardsCount,
         reserveCardsCount: reserveCardsCount
@@ -34,13 +38,14 @@ export default {
     let page = 0;
     const totalPages = Math.ceil(equiposConColeccion.length / itemsPerPage);
 
-    const generarEmbedYPáginas = (paginaActual) => {
+    const generarEmbedYPáginas = async (paginaActual) => {
       const start = paginaActual * itemsPerPage;
       const end = start + itemsPerPage;
       const sliceEquipos = equiposConColeccion.slice(start, end);
 
       let desc = '';
-      sliceEquipos.forEach((eq, idx) => {
+      for (let idx = 0; idx < sliceEquipos.length; idx++) {
+        const eq = sliceEquipos[idx];
         const rankingPos = start + idx;
         let medal = '';
         if (rankingPos === 0) medal = '🥇 ';
@@ -48,9 +53,15 @@ export default {
         else if (rankingPos === 2) medal = '🥉 ';
         else medal = `\`#${rankingPos + 1}\` `;
 
-        desc += `${medal}**${eq.nombreEq}** (de @${eq.userN}) — 📦 **${eq.totalCards}** cartas ` +
+        let username = 'Desconocido';
+        try {
+          const user = client.users.cache.get(eq.userID) || await client.users.fetch(eq.userID);
+          if (user) username = user.username;
+        } catch (e) {}
+
+        desc += `${medal}**${eq.nombreEq}** (de @${username}) — 📦 **${eq.totalCards}** cartas ` +
           `*(👕 ${eq.squadCardsCount} plantilla, 🗂️ ${eq.reserveCardsCount} reserva)*\n`;
-      });
+      }
 
       const embed = new EmbedBuilder()
         .setColor(client.color || '#00ffcc')
@@ -81,7 +92,7 @@ export default {
       return [row];
     };
 
-    const embedInicial = generarEmbedYPáginas(page);
+    const embedInicial = await generarEmbedYPáginas(page);
     const componentesIniciales = generarFilaBotones(page);
 
     const msg = await message.reply({
@@ -106,7 +117,7 @@ export default {
       }
 
       await interaction.editReply({
-        embeds: [generarEmbedYPáginas(page)],
+        embeds: [await generarEmbedYPáginas(page)],
         components: generarFilaBotones(page)
       });
     });
@@ -118,3 +129,4 @@ export default {
     });
   }
 };
+

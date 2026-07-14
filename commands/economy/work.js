@@ -1,4 +1,4 @@
-import Equipo from '../../models/Equipo.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder } from 'discord.js';
 import formatNumber from '../../utils/formatNumber.js';
 
@@ -31,7 +31,9 @@ export default {
   aliases: ['trabajar'],
   desc: 'Trabajá honradamente para ganar Godeanos (100% de éxito, ganancia baja)',
   run: async (client, message, args) => {
-    const equipo = await Equipo.findOne({ userID: message.author.id });
+    const equipo = await prisma.equipo.findUnique({
+      where: { userID: message.author.id }
+    });
 
     if (!equipo) {
       return message.reply('❌ **No tenés un club registrado!** Usá `ar!registro <nombre>` para crear uno.');
@@ -51,19 +53,23 @@ export default {
     // Calcula recompensa aleatoria entre 5000 y 7500
     const recompensa = Math.floor(Math.random() * (7500 - 5000 + 1)) + 5000;
     
-    equipo.dinero += recompensa;
-    equipo.ultimoWork = now;
-
-    await equipo.save();
+    const updated = await prisma.equipo.update({
+      where: { userID: message.author.id },
+      data: {
+        dinero: { increment: recompensa },
+        ultimoWork: new Date(now)
+      }
+    });
 
     const msg = workMessages[Math.floor(Math.random() * workMessages.length)](formatNumber(recompensa));
 
     const embed = new EmbedBuilder()
       .setColor('#00FF00')
       .setTitle('💼 ¡Día de Trabajo Completado!')
-      .setDescription(`${msg}\n\n💵 **Nuevo saldo:** $GDS ${formatNumber(equipo.dinero)}`)
+      .setDescription(`${msg}\n\n💵 **Nuevo saldo:** $GDS ${formatNumber(updated.dinero)}`)
       .setTimestamp();
 
     return message.reply({ embeds: [embed] });
   }
 };
+

@@ -26,7 +26,7 @@ export function calcularMedia(equipo) {
  * @returns {boolean}
  */
 export function plantillaCompleta(equipo) {
-  if (!equipo || !Array.isArray(equipo) || equipo.length < 4) return false;
+  if (!equipo || !Array.isArray(equipo) || equipo.length < 5) return false;
 
   return equipo.every(
     (slot) => slot && slot.nombre && slot.media != null

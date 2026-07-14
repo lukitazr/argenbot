@@ -1,5 +1,4 @@
-import Equipo from '../../models/Equipo.js';
-import Pack from '../../models/Pack.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import formatNumber from '../../utils/formatNumber.js';
 
@@ -8,7 +7,16 @@ export default {
   aliases: ['mispacks', 'sobres'],
   desc: 'Ver los packs disponibles en tu club',
   run: async (client, message) => {
-    const equipo = await Equipo.findOne({ userID: message.author.id });
+    const equipo = await prisma.equipo.findUnique({
+      where: { userID: message.author.id },
+      include: {
+        packs_dis: {
+          include: {
+            pack: true
+          }
+        }
+      }
+    });
 
     if (!equipo) {
       return message.reply('❌ **No tenés un club registrado!** Usá `ar!registro <nombre>` para crear uno.');
@@ -20,27 +28,19 @@ export default {
 
     // Agrupar packs por nombre
     const packsAgrupados = {};
-    for (const pack of equipo.packs_dis) {
-      if (!packsAgrupados[pack.nombre]) {
-        packsAgrupados[pack.nombre] = { ...pack, cantidad: 1 };
+    for (const ep of equipo.packs_dis) {
+      const p = ep.pack;
+      if (!packsAgrupados[p.nombre]) {
+        packsAgrupados[p.nombre] = { ...p, cantidad: 1 };
       } else {
-        packsAgrupados[pack.nombre].cantidad++;
+        packsAgrupados[p.nombre].cantidad++;
       }
     }
 
     const packsArray = Object.values(packsAgrupados);
     let paginaActual = 0;
 
-    // Obtener la URL CDN de la imagen del pack desde la BD
-    async function obtenerImagenUrl(nombrePack) {
-      const packDB = await Pack.findOne({ nombre: nombrePack });
-      if (packDB && packDB.dir && packDB.dir.startsWith('http')) {
-        return packDB.dir;
-      }
-      return null;
-    }
-
-    const crearEmbed = (index, imageUrl) => {
+    const crearEmbed = (index) => {
       const pack = packsArray[index];
       const titulo = pack.cantidad > 1
         ? `📦 ${pack.nombre} x${pack.cantidad}`
@@ -57,8 +57,8 @@ export default {
         .setFooter({ text: `Pack ${index + 1} de ${packsArray.length} | Club: ${equipo.nombreEq}` })
         .setTimestamp();
 
-      if (imageUrl) {
-        embed.setImage(imageUrl);
+      if (pack.dir && pack.dir.startsWith('http')) {
+        embed.setImage(pack.dir);
       }
 
       return embed;
@@ -80,10 +80,8 @@ export default {
       return row;
     };
 
-    const imageUrl = await obtenerImagenUrl(packsArray[paginaActual].nombre);
-
     const msg = await message.reply({
-      embeds: [crearEmbed(paginaActual, imageUrl)],
+      embeds: [crearEmbed(paginaActual)],
       components: packsArray.length > 1 ? [crearBotones(paginaActual)] : []
     });
 
@@ -101,10 +99,8 @@ export default {
         paginaActual = Math.min(packsArray.length - 1, paginaActual + 1);
       }
 
-      const newImageUrl = await obtenerImagenUrl(packsArray[paginaActual].nombre);
-
       await i.update({
-        embeds: [crearEmbed(paginaActual, newImageUrl)],
+        embeds: [crearEmbed(paginaActual)],
         components: [crearBotones(paginaActual)]
       });
     });

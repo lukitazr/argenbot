@@ -1,9 +1,7 @@
 import * as Discord from "discord.js";
 import { readdirSync } from "fs";
 import colors from "colors";
-import dotenv from "dotenv";
 
-dotenv.config();
 colors.enable();
 
 const client = new Discord.Client({

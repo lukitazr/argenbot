@@ -1,4 +1,4 @@
-import Equipo from '../../models/Equipo.js';
+import prisma from '../../models/db.js';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import formatNumber from '../../utils/formatNumber.js';
 
@@ -7,7 +7,9 @@ export default {
   aliases: ['millonarios'],
   run: async (client, message, args, prefix) => {
     // 1. Obtener todos los equipos de la DB ordenados por dinero
-    const equipos = await Equipo.find({}).sort({ dinero: -1 });
+    const equipos = await prisma.equipo.findMany({
+      orderBy: { dinero: 'desc' }
+    });
 
     if (equipos.length === 0) {
       return message.reply('❌ **No hay equipos registrados en la base de datos!**');
@@ -18,13 +20,14 @@ export default {
     let page = 0;
     const totalPages = Math.ceil(equipos.length / itemsPerPage);
 
-    const generarEmbedYPáginas = (paginaActual) => {
+    const generarEmbedYPáginas = async (paginaActual) => {
       const start = paginaActual * itemsPerPage;
       const end = start + itemsPerPage;
       const sliceEquipos = equipos.slice(start, end);
 
       let desc = '';
-      sliceEquipos.forEach((eq, idx) => {
+      for (let idx = 0; idx < sliceEquipos.length; idx++) {
+        const eq = sliceEquipos[idx];
         const rankingPos = start + idx;
         let medal = '';
         if (rankingPos === 0) medal = '🥇 ';
@@ -32,8 +35,14 @@ export default {
         else if (rankingPos === 2) medal = '🥉 ';
         else medal = `\`#${rankingPos + 1}\` `;
 
-        desc += `${medal}**${eq.nombreEq}** (de @${eq.userN}) — 💰 **$GDS ${formatNumber(eq.dinero || 0)}**\n`;
-      });
+        let username = 'Desconocido';
+        try {
+          const user = client.users.cache.get(eq.userID) || await client.users.fetch(eq.userID);
+          if (user) username = user.username;
+        } catch (e) {}
+
+        desc += `${medal}**${eq.nombreEq}** (de @${username}) — 💰 **$GDS ${formatNumber(eq.dinero || 0)}**\n`;
+      }
 
       const embed = new EmbedBuilder()
         .setColor(client.color || '#00ffcc')
@@ -64,7 +73,7 @@ export default {
       return [row];
     };
 
-    const embedInicial = generarEmbedYPáginas(page);
+    const embedInicial = await generarEmbedYPáginas(page);
     const componentesIniciales = generarFilaBotones(page);
 
     const msg = await message.reply({
@@ -89,7 +98,7 @@ export default {
       }
 
       await interaction.editReply({
-        embeds: [generarEmbedYPáginas(page)],
+        embeds: [await generarEmbedYPáginas(page)],
         components: generarFilaBotones(page)
       });
     });
