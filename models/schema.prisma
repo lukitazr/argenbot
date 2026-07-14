@@ -34,19 +34,19 @@ model Pack {
 }
 
 model Equipo {
-  id                      Int                    @id @default(autoincrement())
-  nombreEq                String                 @unique
-  userID                  String                 @unique
-  dinero                  Float                  @default(0)
-  ultimoDaily             DateTime?
-  ultimoWork              DateTime?
-  ultimoSlut              DateTime?
-  ultimoCrime             DateTime?
-  jugadores               EquipoJugador[]
-  packs_dis               EquipoPack[]
-  nbcSlots                nbcSlot[]
-  nbcCompletados          nbcCompletado[]
-  nbcDesafiosCompletados  nbcDesafioCompletado[]
+  id                     Int                    @id @default(autoincrement())
+  nombreEq               String                 @unique
+  userID                 String                 @unique
+  dinero                 Float                  @default(0)
+  ultimoDaily            DateTime?
+  ultimoWork             DateTime?
+  ultimoSlut             DateTime?
+  ultimoCrime            DateTime?
+  jugadores              EquipoJugador[]
+  packs_dis              EquipoPack[]
+  nbcSlots               nbcSlot[]
+  nbcCompletados         nbcCompletado[]
+  nbcDesafiosCompletados nbcDesafioCompletado[]
 }
 
 model EquipoJugador {

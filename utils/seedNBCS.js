@@ -308,18 +308,27 @@ export default async function seedNBCS() {
             }
           });
 
-          // Restaurar registros completados asociados al nombre del desafío
           const keyNombre = desafioData.nombre.toLowerCase();
           const completadosAsociados = completadosRespaldados.filter(c => c.desafioNombre === keyNombre);
           if (completadosAsociados.length > 0) {
-            await prisma.nbcDesafioCompletado.createMany({
-              data: completadosAsociados.map(c => ({
-                desafioId: nuevoDesafio.id,
-                equipoId: c.equipoId,
-                fecha: c.fecha
-              })),
-              skipDuplicates: true
-            });
+            const uniqueCompletados = [];
+            const seenEquipos = new Set();
+            for (const c of completadosAsociados) {
+              if (!seenEquipos.has(c.equipoId)) {
+                seenEquipos.add(c.equipoId);
+                uniqueCompletados.push({
+                  desafioId: nuevoDesafio.id,
+                  equipoId: c.equipoId,
+                  fecha: c.fecha
+                });
+              }
+            }
+
+            if (uniqueCompletados.length > 0) {
+              await prisma.nbcDesafioCompletado.createMany({
+                data: uniqueCompletados
+              });
+            }
           }
 
           // Restaurar slots (cartas colocadas) asociadas al nombre del desafío
