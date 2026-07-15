@@ -2,6 +2,14 @@ import prisma from '../../models/db.js';
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } from 'discord.js';
 import formatNumber from '../../utils/formatNumber.js';
 
+function normalizarTexto(texto) {
+  if (!texto) return '';
+  return texto
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 export default {
   name: 'mercado',
   aliases: ['market'],
@@ -240,21 +248,21 @@ export default {
       });
       if (!comprador) return message.reply('❌ **No tenés un club registrado!**');
 
-      // Buscar todos los jugadores con ese nombre en el mercado
+      // Buscar todas las publicaciones en el mercado
       const todasLasPublicaciones = await prisma.mercado.findMany({
-        where: {
-          jugador: {
-            nombre: {
-              equals: nombreInput
-            }
-          }
-        },
         orderBy: { precio: 'asc' },
         include: { jugador: true }
       });
 
-      if (todasLasPublicaciones.length === 0) {
-        return message.reply(`❌ **No hay ningún jugador llamado "${nombreInput}" en venta!**`);
+      // Filtrar usando coincidencia parcial insensible a acentos y tildes
+      const queryNormalizada = normalizarTexto(nombreInput);
+      const matches = todasLasPublicaciones.filter(p => {
+        const nombreNormalizado = normalizarTexto(p.jugador.nombre);
+        return nombreNormalizado.includes(queryNormalizada);
+      });
+
+      if (matches.length === 0) {
+        return message.reply(`❌ **No hay ningún jugador que coincida con "${nombreInput}" en venta!**`);
       }
 
       const procesarCompra = async (publicacion, targetMsg = message) => {
@@ -349,15 +357,15 @@ export default {
         }
       };
 
-      if (todasLasPublicaciones.length === 1) {
-        return procesarCompra(todasLasPublicaciones[0]);
+      if (matches.length === 1) {
+        return procesarCompra(matches[0]);
       } else {
         // Múltiples opciones encontradas
         const row = new ActionRowBuilder().addComponents(
           new StringSelectMenuBuilder()
             .setCustomId('comprar_select')
             .setPlaceholder('Elegí cuál querés comprar')
-            .addOptions(todasLasPublicaciones.slice(0, 25).map(m => ({
+            .addOptions(matches.slice(0, 25).map(m => ({
               label: `${m.jugador.nombre} (${m.jugador.media}) - $GDS ${formatNumber(m.precio)}`,
               description: `Tipo: ${m.jugador.tipo}`,
               value: m.id.toString()
@@ -367,7 +375,7 @@ export default {
         const embed = new EmbedBuilder()
           .setColor('#0099ff')
           .setTitle('🛒 Múltiples ofertas encontradas')
-          .setDescription(`Hay ${todasLasPublicaciones.length} publicaciones de **${todasLasPublicaciones[0].jugador.nombre}**. Seleccioná cuál querés comprar:`)
+          .setDescription(`Se encontraron ${matches.length} publicaciones coincidentes. Seleccioná cuál querés comprar:`)
           .setFooter({ text: 'Tenés 30 segundos para elegir, DALE FLACO APURATE.' });
 
         const msgMenu = await message.reply({ embeds: [embed], components: [row] });
@@ -381,14 +389,14 @@ export default {
         collector.on('collect', async (i) => {
           await i.deferUpdate();
           const publicacionId = parseInt(i.values[0]);
-          const seleccionada = todasLasPublicaciones.find(m => m.id === publicacionId);
+          const seleccionada = matches.find(m => m.id === publicacionId);
           if (!seleccionada) {
             return i.editReply({ content: '❌ **Error: Publicación no encontrada.** Puede que ya haya sido vendida.', components: [], embeds: [] });
           }
           await procesarCompra(seleccionada, i);
         });
 
-        collector.on('end', async (collected) => {
+        collector.on('end', async (collected, reason) => {
           if (collected.size === 0) {
             try { await msgMenu.edit({ content: '❌ **Tiempo agotado.** Compra cancelada.', components: [], embeds: [] }); } catch (e) { }
           }
@@ -397,5 +405,3 @@ export default {
     }
   }
 }
-
-
