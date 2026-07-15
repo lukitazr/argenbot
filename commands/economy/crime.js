@@ -52,7 +52,7 @@ export default {
         where: { userID: message.author.id },
         data: {
           dinero: { increment: recompensa },
-          ultimoCrime: now
+          ultimoCrime: new Date(now)
         }
       });
 
