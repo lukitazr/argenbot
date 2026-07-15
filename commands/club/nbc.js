@@ -213,8 +213,13 @@ async function listarnbcs(client, message, equipo) {
 
 // ─── MOSTRAR DESAFÍOS DE UN nbc ───
 async function mostrarnbc(client, message, equipo, nombre) {
-  const nbc = await prisma.nbc.findFirst({
-    where: { nombre: { equals: nombre } },
+  // Búsqueda por coincidencia parcial (pattern matching)
+  const matches = await prisma.nbc.findMany({
+    where: {
+      nombre: {
+        contains: nombre
+      }
+    },
     include: {
       premio: true,
       desafios: {
@@ -231,34 +236,64 @@ async function mostrarnbc(client, message, equipo, nombre) {
     }
   });
 
-  if (!nbc) {
-    // Búsqueda parcial
-    const nbcParcial = await prisma.nbc.findFirst({
-      where: { nombre: { contains: nombre } },
-      include: {
-        premio: true,
-        desafios: {
-          include: {
-            premioPack: true,
-            completados: { where: { equipoId: equipo.id } },
-            slots: {
-              where: { equipoId: equipo.id },
-              include: { equipoJugador: { include: { jugador: true } } }
-            }
-          }
-        },
-        completados: { where: { equipoId: equipo.id } }
-      }
-    });
-
-    if (!nbcParcial) {
-      return message.reply(`❌ **No se encontró ningún NBC con el nombre "${nombre}".**\nUsá \`ar!nbc\` para ver la lista.`);
-    }
-
-    return mostrarDesafiosnbc(client, message, equipo, nbcParcial);
+  if (matches.length === 0) {
+    return message.reply(`❌ **No se encontró ningún NBC que coincida con "${nombre}".**\nUsá \`ar!nbc\` para ver la lista.`);
   }
 
-  return mostrarDesafiosnbc(client, message, equipo, nbc);
+  if (matches.length === 1) {
+    return mostrarDesafiosnbc(client, message, equipo, matches[0]);
+  }
+
+  // Si hay más de un match (ambigüedad), mostramos select menu intermedio
+  const selectOptions = matches.slice(0, 25).map(nbc => ({
+    label: nbc.nombre.substring(0, 100),
+    description: `Premio: ${nbc.premio.nombre} (Media ${nbc.premio.media})`,
+    value: `nbc_select_${nbc.id}`
+  }));
+
+  const selectMenu = new StringSelectMenuBuilder()
+    .setCustomId('nbc_ambiguity_menu')
+    .setPlaceholder('Seleccioná el NBC que buscabas...')
+    .addOptions(selectOptions);
+
+  const row = new ActionRowBuilder().addComponents(selectMenu);
+
+  const msg = await message.reply({
+    content: `🔍 **Se encontraron ${matches.length} desafíos que coinciden con "${nombre}".** Seleccioná uno:`,
+    components: [row]
+  });
+
+  const collector = msg.createMessageComponentCollector({
+    filter: (i) => i.user.id === message.author.id && i.customId === 'nbc_ambiguity_menu',
+    time: 60000
+  });
+
+  collector.on('collect', async (interaction) => {
+    const selectedValue = interaction.values[0];
+    const nbcId = parseInt(selectedValue.replace('nbc_select_', ''));
+    const selectedNbc = matches.find(m => m.id === nbcId);
+
+    if (selectedNbc) {
+      collector.stop('selected');
+      await interaction.deferUpdate();
+      try {
+        await msg.delete();
+      } catch (e) {
+        // En caso de que ya se haya borrado
+      }
+      await mostrarDesafiosnbc(client, message, equipo, selectedNbc);
+    }
+  });
+
+  collector.on('end', async (collected, reason) => {
+    if (reason !== 'selected') {
+      try {
+        await msg.edit({ content: '❌ **Tiempo de espera agotado.**', components: [] });
+      } catch (e) {
+        // Ignorar si el mensaje fue borrado
+      }
+    }
+  });
 }
 
 async function mostrarDesafiosnbc(client, message, equipo, nbc) {
