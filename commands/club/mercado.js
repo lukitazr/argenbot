@@ -136,6 +136,20 @@ export default {
         return message.reply(`❌ **No tenés a "${nombreInput}" en tu reserva!**`);
       }
 
+      // Filtrar versiones intransferibles (NBC)
+      const transferibles = matches.filter(ej => {
+        const tLower = (ej.jugador.tipo || '').toLowerCase();
+        const dLower = (ej.jugador.dir || '').toLowerCase();
+        return !tLower.includes('challenge') && !tLower.includes('nbc') && !dLower.includes('/nbc/');
+      });
+
+      if (transferibles.length === 0) {
+        return message.reply('❌ **Las cartas obtenidas como recompensa de NBC son intransferibles y no se pueden vender.**');
+      }
+
+      // Usar las cartas transferibles para la publicación
+      const matchesVenta = transferibles;
+
       const procesarVenta = async (ejId, jugadorData, targetMsg = message) => {
         // Verificar si el jugador sigue en la reserva
         const eqJug = await prisma.equipoJugador.findUnique({
@@ -166,15 +180,15 @@ export default {
         }
       };
 
-      if (matches.length === 1) {
-        return procesarVenta(matches[0].id, matches[0].jugador);
+      if (matchesVenta.length === 1) {
+        return procesarVenta(matchesVenta[0].id, matchesVenta[0].jugador);
       } else {
         // Múltiples versiones encontradas
         const row = new ActionRowBuilder().addComponents(
           new StringSelectMenuBuilder()
             .setCustomId('vender_select')
             .setPlaceholder('Seleccioná qué versión querés vender')
-            .addOptions(matches.map(m => ({
+            .addOptions(matchesVenta.map(m => ({
               label: `${m.jugador.nombre} (${m.jugador.media})`,
               description: `${m.jugador.tipo} | Valor: $GDS ${formatNumber(m.jugador.valor)}`,
               value: m.id.toString()
@@ -184,7 +198,7 @@ export default {
         const embed = new EmbedBuilder()
           .setColor('#FFD700')
           .setTitle('🤔 Múltiples versiones encontradas')
-          .setDescription(`Tenés ${matches.length} versiones de **${matches[0].jugador.nombre}**. Seleccioná cuál querés poner a la venta por **$GDS ${formatNumber(precio)}**:`)
+          .setDescription(`Tenés ${matchesVenta.length} versiones de **${matchesVenta[0].jugador.nombre}**. Seleccioná cuál querés poner a la venta por **$GDS ${formatNumber(precio)}**:`)
           .setFooter({ text: 'Tenés 30 segundos para elegir. APURATE FLACO.' });
 
         const msgMenu = await message.reply({ embeds: [embed], components: [row] });
@@ -198,7 +212,7 @@ export default {
         collector.on('collect', async (i) => {
           await i.deferUpdate();
           const seleccionadaId = parseInt(i.values[0]);
-          const match = matches.find(m => m.id === seleccionadaId);
+          const match = matchesVenta.find(m => m.id === seleccionadaId);
           await procesarVenta(seleccionadaId, match.jugador, i);
         });
 

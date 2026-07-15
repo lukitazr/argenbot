@@ -161,6 +161,15 @@ export default {
   }
 };
 
+// Helper para normalizar acentos y pasar a minúsculas
+function normalizarTexto(texto) {
+  if (!texto) return '';
+  return texto
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 // ─── LISTAR TODOS LOS nbcs ───
 async function listarnbcs(client, message, equipo) {
   const nbcs = await prisma.nbc.findMany({
@@ -205,21 +214,76 @@ async function listarnbcs(client, message, equipo) {
     .setColor(client.color || '#FFD700')
     .setTitle('🏆 Nigger Building Challenges')
     .setDescription(desc)
-    .setFooter({ text: `Usá ar!nbc <nombre> para ver detalles | Club: ${equipo.nombreEq}` })
+    .setFooter({ text: `Usá el menú de abajo o ar!nbc <nombre> para ver detalles | Club: ${equipo.nombreEq}` })
     .setTimestamp();
 
-  return message.reply({ embeds: [embed] });
+  // Construir menú de selección para todos los NBCs
+  const selectOptions = nbcs.slice(0, 25).map(nbc => ({
+    label: nbc.nombre.substring(0, 100),
+    description: `Premio: ${nbc.premio.nombre} (Media ${nbc.premio.media})`,
+    value: `nbc_main_select_${nbc.id}`
+  }));
+
+  const selectMenu = new StringSelectMenuBuilder()
+    .setCustomId('nbc_main_menu')
+    .setPlaceholder('Seleccioná un NBC para ver detalles...')
+    .addOptions(selectOptions);
+
+  const row = new ActionRowBuilder().addComponents(selectMenu);
+
+  const msg = await message.reply({ embeds: [embed], components: [row] });
+
+  const collector = msg.createMessageComponentCollector({
+    filter: (i) => i.user.id === message.author.id && i.customId === 'nbc_main_menu',
+    time: 60000
+  });
+
+  collector.on('collect', async (interaction) => {
+    const selectedValue = interaction.values[0];
+    const nbcId = parseInt(selectedValue.replace('nbc_main_select_', ''));
+    
+    // Obtener los detalles completos del NBC seleccionado
+    const selectedNbc = await prisma.nbc.findUnique({
+      where: { id: nbcId },
+      include: {
+        premio: true,
+        desafios: {
+          include: {
+            premioPack: true,
+            completados: { where: { equipoId: equipo.id } },
+            slots: {
+              where: { equipoId: equipo.id },
+              include: { equipoJugador: { include: { jugador: true } } }
+            }
+          }
+        },
+        completados: { where: { equipoId: equipo.id } }
+      }
+    });
+
+    if (selectedNbc) {
+      collector.stop('selected');
+      await interaction.deferUpdate();
+      try {
+        await msg.delete();
+      } catch (e) {}
+      await mostrarDesafiosnbc(client, message, equipo, selectedNbc);
+    }
+  });
+
+  collector.on('end', async (collected, reason) => {
+    if (reason !== 'selected') {
+      try {
+        await msg.edit({ components: [] });
+      } catch (e) {}
+    }
+  });
 }
 
 // ─── MOSTRAR DESAFÍOS DE UN nbc ───
 async function mostrarnbc(client, message, equipo, nombre) {
-  // Búsqueda por coincidencia parcial (pattern matching)
-  const matches = await prisma.nbc.findMany({
-    where: {
-      nombre: {
-        contains: nombre
-      }
-    },
+  // Traer todos los NBCs con sus relaciones
+  const nbcs = await prisma.nbc.findMany({
     include: {
       premio: true,
       desafios: {
@@ -234,6 +298,13 @@ async function mostrarnbc(client, message, equipo, nombre) {
       },
       completados: { where: { equipoId: equipo.id } }
     }
+  });
+
+  // Filtrar insensible a acentos/tildes y mayúsculas/minúsculas en Javascript
+  const queryNormalizada = normalizarTexto(nombre);
+  const matches = nbcs.filter(nbc => {
+    const nombreNormalizado = normalizarTexto(nbc.nombre);
+    return nombreNormalizado.includes(queryNormalizada);
   });
 
   if (matches.length === 0) {

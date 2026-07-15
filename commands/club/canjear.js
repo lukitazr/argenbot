@@ -83,6 +83,15 @@ export default {
       });
     }
 
+    // Excluir cartas NBC intransferibles de las opciones de sobres
+    if (jugadoresElegibles) {
+      jugadoresElegibles = jugadoresElegibles.filter(j => {
+        const tLower = (j.tipo || '').toLowerCase();
+        const dLower = (j.dir || '').toLowerCase();
+        return !tLower.includes('challenge') && !tLower.includes('nbc') && !dLower.includes('/nbc/');
+      });
+    }
+
     if (!jugadoresElegibles || jugadoresElegibles.length === 0) {
       return message.reply('❌ **No hay jugadores disponibles en este pack!**');
     }
