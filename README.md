@@ -1,7 +1,7 @@
 # ⚽ ArgenBot
 
 <p align="center">
-  <img src="" alt="ArgenBot Banner" width="600" />
+  <img src="https://raw.githubusercontent.com/lukitazr/argenbot/refs/heads/main/assets/fondo/background.png" alt="ArgenBot Banner" width="600" />
 </p>
 
 <p align="center">
