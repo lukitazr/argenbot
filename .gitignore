@@ -5,7 +5,6 @@ node_modules/
 package-lock.json
 assets/cartas
 assets/catalogo
-assets/fondo
 assets/packs
 .antigravitycli
 /generated/prisma

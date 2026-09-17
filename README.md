@@ -1,7 +1,7 @@
 # ⚽ ArgenBot
 
 <p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/lukitaz-r/assets@main/argenbot/fondo/background.png" alt="ArgenBot Banner" width="600" />
+  <img src="" alt="ArgenBot Banner" width="600" />
 </p>
 
 <p align="center">
